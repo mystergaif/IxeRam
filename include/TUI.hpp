@@ -182,6 +182,7 @@ private:
   bool show_load_ct_modal = false;    // #2: cheat table load
   bool show_bp_list_modal = false;    // #7: breakpoint list
   bool show_record_modal = false;     // #8: recording controls
+  bool show_filter_modal = false;      // Filter results modal
 
   std::string ghidra_base_input;
   std::string watch_desc_input;
@@ -189,6 +190,12 @@ private:
   std::string ct_path_input = "session.ixeram"; // #2: cheat table file path
   std::string between_min_input;                // #3: Between scan min
   std::string between_max_input;                // #3: Between scan max
+
+  // ─── Result Filtering ───────────────────────────────────────────────
+  std::string filter_module_input;     // filter by module name (substring)
+  bool filter_show_changed_only = false; // only show addresses whose value changed since first scan
+  int  filter_module_sel_idx = 0;      // selected module in the filter list
+  std::vector<std::string> filter_module_list; // discovered module names
 
   // ─── Record / Playback (#8) ─────────────────────────────────────────
   bool record_playing = false;

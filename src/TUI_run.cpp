@@ -18,11 +18,13 @@
 #include <fstream>
 #include <iomanip>
 #include <keystone/keystone.h>
+#include <set>
 #include <sstream>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
+#include <unordered_map>
 using namespace ftxui;
 
 void TUI::run() {
@@ -140,6 +142,22 @@ void TUI::run() {
       screen.PostEvent(Event::Custom);
     }).detach();
     show_next_scan_modal = false;
+    next_scan_value.clear();
+  };
+
+  auto do_unknown_scan = [&] {
+    if (scanner.is_scanning())
+      return;
+    scanner.set_scanning(true);
+    add_log("⚡ Background Unknown Scan Started...");
+    std::thread([&, t = VALUE_TYPES[selected_value_type_idx],
+                 n = std::string(VALUE_TYPE_NAMES[selected_value_type_idx])] {
+      scanner.unknown_initial_scan(t);
+      add_log("✓ Unknown Scan [" + n + "] → " +
+              std::to_string(scanner.get_results().size()) + " results");
+      screen.PostEvent(Event::Custom);
+    }).detach();
+    show_scan_modal = false;
   };
 
   auto do_write = [&] {
@@ -312,101 +330,196 @@ void TUI::run() {
   };
 
   // ──────────────────────────────────────────────────────────────────
-  // ADDRESS TAB
+  // ADDRESS TAB  (with live module + changed-value filters)
   // ──────────────────────────────────────────────────────────────────
   auto address_tab = Renderer([&] {
-    static uint32_t fc = 0;
-    fc++;
+    static uint32_t fc = 0; fc++;
 
     std::vector<CategorizedAddress> results_copy;
     std::unordered_map<uintptr_t, double> current_vals;
     std::unordered_map<uintptr_t, std::string> current_strs;
+    std::unordered_map<uintptr_t, double> prev_vals_copy;
+    size_t total_results = 0;
+    size_t filtered_total = 0;
 
-    int visible_count = std::max(5, term_rows() - 14);
+    int visible_count = std::max(5, term_rows() - 18);
     {
       std::lock_guard<std::recursive_mutex> lock(ui_mutex);
       if (categorized_results.empty())
-        return vbox(text(" No results ") | center);
+        return vbox(
+          text(" ◈ No scan results ") | color(C_DIM) | hcenter,
+          text(" Press F2 to start a scan or") | color(C_DIM) | hcenter,
+          text(" Ctrl+Alt+U for Unknown Initial Value scan ") | color(C_YELLOW) | hcenter
+        );
 
-      // Copy only what we need for the current view window
-      int start_idx = std::max(0, selected_result_idx - visible_count / 2);
-      int end_idx =
-          std::min((int)categorized_results.size(), start_idx + visible_count);
+      total_results = categorized_results.size();
 
-      for (int i = start_idx; i < end_idx; ++i) {
-        const auto &res = categorized_results[i];
+      // Build filtered view
+      std::vector<int> visible_indices;
+      visible_indices.reserve(total_results);
+      for (int i = 0; i < (int)total_results; ++i) {
+        const auto& res = categorized_results[i];
+        // Module filter
+        if (!filter_module_input.empty()) {
+          std::string mn_lower = res.module_name;
+          std::string fi_lower = filter_module_input;
+          for (auto& c : mn_lower) c = tolower(c);
+          for (auto& c : fi_lower) c = tolower(c);
+          if (mn_lower.find(fi_lower) == std::string::npos)
+            continue;
+        }
+        // suspicious filter
+        if (hide_suspicious_low && res.suspicious_score < 30)
+          continue;
+        // Changed-only filter: current != prev
+        if (filter_show_changed_only) {
+          if (cached_address_doubles.count(res.addr)) {
+            double cur = cached_address_doubles.at(res.addr);
+            if (last_vals_for_color.count(res.addr)) {
+              double prev = last_vals_for_color.at(res.addr);
+              if (cur == prev) continue;
+            }
+          }
+        }
+        visible_indices.push_back(i);
+      }
+      filtered_total = visible_indices.size();
+
+      // Clamp selection
+      if (selected_result_idx >= (int)filtered_total)
+        selected_result_idx = std::max(0, (int)filtered_total - 1);
+
+      int win_start = std::max(0, selected_result_idx - visible_count / 2);
+      int win_end   = std::min((int)filtered_total, win_start + visible_count);
+
+      // Build module list for filter dropdown
+      {
+        std::set<std::string> mods;
+        for (const auto& r : categorized_results)
+          if (!r.module_name.empty()) mods.insert(r.module_name);
+        filter_module_list.assign(mods.begin(), mods.end());
+      }
+
+      for (int wi = win_start; wi < win_end; ++wi) {
+        int gi = visible_indices[wi];
+        const auto& res = categorized_results[gi];
         results_copy.push_back(res);
-        current_vals[res.addr] = cached_address_doubles[res.addr];
-        current_strs[res.addr] = cached_address_values[res.addr];
+        current_vals[res.addr]  = cached_address_doubles[res.addr];
+        current_strs[res.addr]  = cached_address_values[res.addr];
+        if (last_vals_for_color.count(res.addr))
+          prev_vals_copy[res.addr] = last_vals_for_color.at(res.addr);
       }
     }
 
-    Elements vis;
-    for (size_t i = 0; i < results_copy.size(); ++i) {
-      const auto &res = results_copy[i];
-      int global_idx = std::max(0, selected_result_idx - visible_count / 2) + i;
-      if (hide_suspicious_low && res.suspicious_score < 30)
-        continue;
+    // ─── Build header with filter status ─────────────────────────────
+    // active filter pill helpers
+    auto pill = [&](const std::string& label, Color c) {
+      return hbox({text(" "), text(label) | bold | color(c),
+                   text(" ") | color(c)}) |
+             bgcolor(Color::RGB(30, 30, 50));
+    };
 
-      std::string vs = current_strs[res.addr];
-      double dv = current_vals[res.addr];
+    Elements header_badges;
+    header_badges.push_back(
+        hbox({text(" Results: ") | color(C_DIM),
+              text(std::to_string(filtered_total)) | color(C_ACCENT) | bold,
+              text(" / ") | color(C_DIM),
+              text(std::to_string(total_results)) | color(C_DIM),
+              text("  ") | color(C_DIM)
+             }));
+    if (!filter_module_input.empty())
+      header_badges.push_back(pill("MOD:" + filter_module_input, C_ORANGE));
+    if (filter_show_changed_only)
+      header_badges.push_back(pill("CHANGED ONLY", C_RED));
+    if (hide_suspicious_low)
+      header_badges.push_back(pill("SCORE>30", C_YELLOW));
+    header_badges.push_back(filler());
+    header_badges.push_back(text(" [F6]Filter ") | color(C_DIM));
+
+    Elements rows;
+    // Column header
+    rows.push_back(
+      hbox(std::move(header_badges)) |
+        bgcolor(Color::RGB(16,16,28)));
+    rows.push_back(
+      hbox(
+        text("  ")  | color(C_DIM) | size(WIDTH, EQUAL, 2),
+        text("TYPE") | color(C_DIM) | bold | size(WIDTH, EQUAL, 4),
+        text(" ADDRESS          ") | color(C_DIM) | bold | size(WIDTH, EQUAL, 18),
+        text(" +OFFSET   ") | color(C_DIM) | bold | size(WIDTH, EQUAL, 12),
+        text(" MODULE               ") | color(C_DIM) | bold | size(WIDTH, EQUAL, 22),
+        text(" VALUE         ") | color(C_DIM) | bold
+      ) | bgcolor(Color::RGB(20, 20, 36)));
+    rows.push_back(separatorLight() | color(C_DIM));
+
+    int win_start_disp = std::max(0, selected_result_idx - visible_count / 2);
+    for (size_t ri = 0; ri < results_copy.size(); ++ri) {
+      const auto& res = results_copy[ri];
+      int global_filtered_idx = win_start_disp + (int)ri;
+
+      std::string vs  = current_strs[res.addr];
+      double dv       = current_vals[res.addr];
+      bool changed    = false;
       Color cv = C_FG;
-      if (last_vals_for_color.count(res.addr)) {
-        double pv = last_vals_for_color[res.addr];
-        if (dv > pv)
-          cv = C_RED;
-        else if (dv < pv)
-          cv = C_ACCENT;
+      if (prev_vals_copy.count(res.addr)) {
+        double pv = prev_vals_copy.at(res.addr);
+        if (dv > pv)       { cv = C_RED;    changed = true; }
+        else if (dv < pv)  { cv = C_ACCENT; changed = true; }
+        else               { changed = false; }
       }
       if (fc % 3 == 0)
         last_vals_for_color[res.addr] = dv;
 
       std::ostringstream sa, so;
-      sa << "0x" << std::hex << std::uppercase << std::setw(12)
-         << std::setfill('0') << res.addr;
-      so << std::hex << std::uppercase << (res.addr - res.base_addr);
+      sa << "0x" << std::hex << std::uppercase
+         << std::setw(12) << std::setfill('0') << res.addr;
+      so << "+" << std::hex << std::uppercase << (res.addr - res.base_addr);
+
       bool frz = frozen_addresses.count(res.addr);
       Color cc = C_DIM;
       switch (res.type) {
-      case AddressType::Code:
-        cc = C_RED;
-        break;
-      case AddressType::Data:
-        cc = C_ORANGE;
-        break;
-      case AddressType::Heap:
-        cc = C_GREEN;
-        break;
-      case AddressType::Stack:
-        cc = C_ACCENT;
-        break;
-      default:
-        break;
+      case AddressType::Code:  cc = C_RED;    break;
+      case AddressType::Data:  cc = C_ORANGE; break;
+      case AddressType::Heap:  cc = C_GREEN;  break;
+      case AddressType::Stack: cc = C_ACCENT; break;
+      default: break;
       }
+
+      // Shorten module name for display
+      std::string mod_disp = res.module_name;
+      if (mod_disp.size() > 20) mod_disp = mod_disp.substr(0, 17) + "...";
+
       auto row = hbox(
-          text(frz ? "❄" : " ") | color(C_CYAN),
-          text("[" + addr_type_str(res.type) + "]") | color(cc) | bold,
-          text(" "),
-          text(sa.str()) | color(res.suspicious_score > 50 ? C_FG : C_DIM) |
-              size(WIDTH, EQUAL, 16),
-          text(" +") | color(C_DIM),
-          text(so.str()) | color(C_ACCENT2) | size(WIDTH, EQUAL, 10),
-          text(" │ ") | color(C_DIM),
-          text("[" + valueTypeName(scanner.get_value_type()) + "]") |
-              color(C_ACCENT2) | size(WIDTH, EQUAL, 9),
-          text(" "), text(vs) | color(cv) | bold | size(WIDTH, EQUAL, 14));
-      if (global_idx == selected_result_idx)
+        text(frz ? "❄" : changed ? "●" : " ") |
+          color(frz ? C_CYAN : changed ? cv : C_DIM),
+        text(" "),
+        text(addr_type_str(res.type)) | color(cc) | bold | size(WIDTH, EQUAL, 3),
+        text(sa.str()) |
+          color(res.suspicious_score > 50 ? C_FG : C_DIM) |
+          size(WIDTH, EQUAL, 16),
+        text(" ") | color(C_DIM),
+        text(so.str()) | color(C_ACCENT2) | size(WIDTH, EQUAL, 11),
+        text(" ") | color(C_DIM),
+        text(mod_disp) | color(C_YELLOW) | size(WIDTH, EQUAL, 21),
+        text(" │ ") | color(C_DIM),
+        text(vs) | color(cv) | bold | size(WIDTH, EQUAL, 14)
+      );
+      if (global_filtered_idx == selected_result_idx)
         row = row | bgcolor(C_SEL_BG) | color(Color::White);
-      vis.push_back(row);
+      rows.push_back(row);
     }
 
-    if (vis.empty()) {
-      return vbox(text(" No results found or match the filter. ") |
-                  color(C_DIM) | center);
+    if (results_copy.empty()) {
+      rows.push_back(
+        text(" No results match the current filters. ") |
+          color(C_DIM) | hcenter);
+      rows.push_back(
+        text(" Press [F6] to change filters. ") | color(C_YELLOW) | hcenter);
     }
 
-    return vbox(std::move(vis));
+    return vbox(std::move(rows));
   });
+
 
   // ──────────────────────────────────────────────────────────────────
   // MEMORY MAP TAB
@@ -1022,12 +1135,22 @@ void TUI::run() {
                            "%") |
                           hcenter | color(C_DIM))
                 : text(" Idle") | color(C_DIM),
-            text(" [T]type [Y]mode [L]align") | color(C_DIM)) |
+            separatorLight() | color(C_DIM),
+            // Active filter indicators
+            !filter_module_input.empty()
+              ? hbox({text(" MOD:") | color(C_DIM), text(filter_module_input) | color(C_ORANGE) | bold})
+              : text(" Module: All") | color(C_DIM),
+            filter_show_changed_only
+              ? text(" ● Changed Only") | color(C_RED)
+              : text(" Changed: Show All") | color(C_DIM),
+            text(" [T]type [Y]mode [L]align [F6]filter") | color(C_DIM)) |
         borderLight);
     sb.push_back(vbox(text(" ACTIONS ") | bold | color(C_ACCENT) | hcenter,
                       text(" F2 First Scan") | color(C_FG),
+                      text(" Ctrl+Alt+U Unknown Scan") | color(C_YELLOW),
                       text(" F7 Next Scan") | color(C_FG),
                       text(" F8 Clear Results") | color(C_FG),
+                      text(" F6 Filter Results") | color(C_CYAN),
                       text(" X  Export JSON") | color(C_GREEN),
                       text(" W  Write Value") | color(C_ORANGE),
                       text(" G  Go-to Addr") | color(C_YELLOW),
@@ -1350,8 +1473,13 @@ void TUI::run() {
                hbox(text(" Val:  ") | color(C_DIM),
                     input_scan->Render() | flex),
                separatorLight(),
+               vbox({
+                   hbox({text(" [ENTER] ") | color(C_GREEN), text("Exact Search")}) | hcenter,
+                   hbox({text(" [U] ") | color(C_YELLOW), text("Unknown Initial Value")}) | hcenter,
+               }),
+               separatorLight(),
                text(
-                   " (change type from main menu)  [Enter]scan  [ESC]cancel ") |
+                   " (change type from main menu)    [ESC]cancel ") |
                    color(C_DIM) | hcenter) |
            size(WIDTH, EQUAL, 50) | borderDouble |
            bgcolor(Color::RGB(10, 12, 18)) | center;
@@ -1474,6 +1602,59 @@ void TUI::run() {
                 text(" [Enter]add  [ESC]cancel ") | color(C_DIM) | hcenter) |
            size(WIDTH, EQUAL, 46) | borderDouble |
            bgcolor(Color::RGB(10, 15, 20)) | center;
+  });
+
+  // ─── Filter Modal ────────────────────────────────────────────────────
+  auto input_filter_mod = Input(&filter_module_input, "e.g. libgame or [heap]...");
+  auto filter_modal_r = Renderer(input_filter_mod, [&] {
+    // Module list panel
+    Elements mod_items;
+    mod_items.push_back(
+      text("  (All modules)") |
+        (filter_module_input.empty() ? bgcolor(C_SEL_BG) | color(Color::White) : color(C_DIM)));
+    for (int i = 0; i < (int)filter_module_list.size(); ++i) {
+      const auto& m = filter_module_list[i];
+      std::string mn = m;
+      if (mn.size() > 36) mn = mn.substr(0, 33) + "...";
+      bool sel = (m == filter_module_input);
+      auto row = hbox({text("  "), text(mn)}) |
+                 (sel ? bgcolor(C_SEL_BG) | color(Color::White) : color(C_FG));
+      mod_items.push_back(row);
+    }
+
+    return vbox(
+             text(" ◈ FILTER RESULTS ") | bold | color(C_CYAN) | hcenter,
+             separatorLight() | color(C_DIM),
+             // Module search
+             vbox(
+               text(" Module Filter:") | color(C_DIM) | bold,
+               hbox(text(" ▶ ") | color(C_ACCENT),
+                    input_filter_mod->Render() | flex),
+               text(" (type to search, or use ↑/↓ to pick from list)") | color(C_DIM)
+             ),
+             separatorLight() | color(C_DIM),
+             // Module list
+             text(" Known Modules:") | color(C_DIM) | bold,
+             vbox(std::move(mod_items)) |
+               size(HEIGHT, LESS_THAN, 12) | frame,
+             separatorLight() | color(C_DIM),
+             // Changed-only toggle
+             hbox({
+               text(" Changed-Only: ") | color(C_DIM),
+               filter_show_changed_only
+                 ? text("[●  ON ]") | bold | color(C_RED)
+                 : text("[○ OFF ]") | color(C_DIM),
+               text("  [C] toggle") | color(C_DIM)
+             }),
+             separatorLight() | color(C_DIM),
+             hbox({
+               text(" [ENTER] apply ") | color(C_GREEN),
+               text(" [DEL] clear filter ") | color(C_ORANGE),
+               text(" [ESC] cancel ") | color(C_DIM)
+             }) | hcenter
+           ) |
+           size(WIDTH, EQUAL, 52) | borderDouble |
+           bgcolor(Color::RGB(8, 12, 22)) | center;
   });
 
   auto speedhack_modal_r = Renderer(input_speedhack, [&] {
@@ -1601,6 +1782,9 @@ void TUI::run() {
           bgcolor(Color::RGB(22, 8, 8)) | center;
       base = dbox({base, modal});
     }
+    // Filter modal
+    if (show_filter_modal)
+      base = dbox({base, filter_modal_r->Render() | center});
     return base;
   });
 
@@ -1742,6 +1926,10 @@ void TUI::run() {
     if (show_scan_modal) {
       if (ev == Event::Return) {
         do_initial_scan();
+        return true;
+      }
+      if (ev == Event::Character('u') || ev == Event::Character('U')) {
+        do_unknown_scan();
         return true;
       }
       if (ev == Event::Escape) {
@@ -1981,6 +2169,53 @@ void TUI::run() {
       }
       return true;
     }
+    // Filter modal event handling
+    if (show_filter_modal) {
+      if (ev == Event::Escape) {
+        show_filter_modal = false;
+        return true;
+      }
+      if (ev == Event::Return) {
+        show_filter_modal = false;
+        add_log("Filter: module=" +
+                (filter_module_input.empty() ? "(all)" : filter_module_input) +
+                (filter_show_changed_only ? " | changed-only" : ""));
+        return true;
+      }
+      // DEL clears module filter
+      if (ev == Event::Delete) {
+        filter_module_input.clear();
+        filter_module_sel_idx = 0;
+        return true;
+      }
+      // C toggles changed-only
+      if (ev == Event::Character('c') || ev == Event::Character('C')) {
+        filter_show_changed_only = !filter_show_changed_only;
+        return true;
+      }
+      // Arrow up/down to navigate module list
+      if (ev == Event::ArrowDown) {
+        if (filter_module_sel_idx < (int)filter_module_list.size()) {
+          filter_module_sel_idx++;
+          if (filter_module_sel_idx == 0)
+            filter_module_input.clear();
+          else if (filter_module_sel_idx <= (int)filter_module_list.size())
+            filter_module_input = filter_module_list[filter_module_sel_idx - 1];
+        }
+        return true;
+      }
+      if (ev == Event::ArrowUp) {
+        if (filter_module_sel_idx > 0) {
+          filter_module_sel_idx--;
+          if (filter_module_sel_idx == 0)
+            filter_module_input.clear();
+          else
+            filter_module_input = filter_module_list[filter_module_sel_idx - 1];
+        }
+        return true;
+      }
+      return input_filter_mod->OnEvent(ev);
+    }
     if (ev == Event::Character('q') || ev == Event::Character('Q')) {
       engine.detach();
       screen.ExitLoopClosure()();
@@ -1993,6 +2228,11 @@ void TUI::run() {
     if (ev == Event::F2) {
       scan_value.clear();
       show_scan_modal = true;
+      return true;
+    }
+    // Ctrl+Alt+U (often esc + ctrl+u in terminals)
+    if (ev == Event::Special("\x1b\x15")) {
+      do_unknown_scan();
       return true;
     }
     if (ev == Event::F3) {
@@ -2030,8 +2270,16 @@ void TUI::run() {
       return true;
     }
     if (ev == Event::F6) {
-      hide_suspicious_low = !hide_suspicious_low;
-      add_log(hide_suspicious_low ? "Filter:suspicious" : "Filter:all");
+      // Open filter modal (build module list first)
+      {
+        std::set<std::string> mods;
+        std::lock_guard<std::recursive_mutex> lock(ui_mutex);
+        for (const auto& r : categorized_results)
+          if (!r.module_name.empty()) mods.insert(r.module_name);
+        filter_module_list.assign(mods.begin(), mods.end());
+      }
+      filter_module_sel_idx = 0;
+      show_filter_modal = true;
       return true;
     }
     if (ev == Event::F7) {
