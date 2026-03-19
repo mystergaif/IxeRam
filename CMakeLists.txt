@@ -60,6 +60,8 @@ endif()
 
 add_executable(memdebug
     src/main.cpp
+    src/Config.cpp
+    src/SetupWizard.cpp
     src/MemoryEngine.cpp
     src/Scanner.cpp
     src/TUI.cpp

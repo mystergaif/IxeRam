@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Config.hpp"
 #include "Scanner.hpp"
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/screen_interactive.hpp"
@@ -12,18 +13,20 @@
 
 class TUI {
 public:
-  TUI(MemoryEngine &engine, Scanner &scanner);
+  TUI(MemoryEngine &engine, Scanner &scanner,
+      const IxeRamConfig &cfg = IxeRamConfig{});
   ~TUI();
   void run();
 
 private:
   MemoryEngine &engine;
   Scanner &scanner;
+  IxeRamConfig config;
   ftxui::ScreenInteractive screen = ftxui::ScreenInteractive::Fullscreen();
 
   // ─── Main tab ────────────────────────────────────────────────────────
   // 0=Addresses  1=Memory Map  2=Call Graph 3=Watch 4=Ptr 5=Disasm
-  // 6=Struct Dissector
+  // 6=Struct Dissector 7=Settings
   int main_tab = 0;
 
   // ─── UI State ────────────────────────────────────────────────────────
@@ -36,6 +39,7 @@ private:
   std::string struct_base_addr_input;  // Structure dissector base
   std::vector<std::string> logs;
   std::mutex logs_mutex;
+  int log_max_lines = 200; // configurable via IxeRamConfig
   int selected_result_idx = 0;
   int selected_map_idx = 0;
   int selected_cg_idx = 0; // selected node in call graph list
@@ -94,6 +98,34 @@ private:
   int selected_disasm_idx = 0;
   std::vector<uintptr_t> disasm_history;
   bool show_patch_modal = false;
+  std::string patch_asm_input;
+
+  bool show_sidebar = true;
+  bool show_right_panel = true;
+  bool show_log_panel = true;
+  
+  // ─── Mouse and Context Menu ─────────────────────────────────────────
+  bool show_context_menu = false;
+  int context_menu_x = 0;
+  int context_menu_y = 0;
+  uintptr_t context_menu_addr = 0;
+  std::string context_menu_val;
+  std::string context_menu_mod;
+  uintptr_t context_menu_offset = 0;
+
+  void copy_to_clipboard(const std::string &text);
+  void show_ctx_at(int x, int y, uintptr_t addr, const std::string &val,
+                   const std::string &mod = "", uintptr_t off = 0);
+
+  // ─── Mouse Areas ───────────────────────────────────────────────
+  ftxui::Box result_list_box;
+  ftxui::Box map_list_box;
+  ftxui::Box actions_box;
+  ftxui::Box tabs_box;
+  ftxui::Box type_box;
+  ftxui::Box stype_box;
+  ftxui::Box log_box;
+
   std::string patch_input;
   uintptr_t patch_addr = 0;
 
@@ -196,6 +228,9 @@ private:
   bool filter_show_changed_only = false; // only show addresses whose value changed since first scan
   int  filter_module_sel_idx = 0;      // selected module in the filter list
   std::vector<std::string> filter_module_list; // discovered module names
+  int settings_theme_idx = 0;
+  std::string settings_log_max_lines_input;
+  std::string settings_ghidra_base_input;
 
   // ─── Record / Playback (#8) ─────────────────────────────────────────
   bool record_playing = false;

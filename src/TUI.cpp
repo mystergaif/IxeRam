@@ -26,8 +26,21 @@ constexpr const char *TUI::SCAN_TYPE_NAMES[];
 constexpr ScanType TUI::SCAN_TYPES[];
 
 // ─── ctor / dtor ─────────────────────────────────────────────────────────
-TUI::TUI(MemoryEngine &e, Scanner &s) : engine(e), scanner(s) {
+TUI::TUI(MemoryEngine &e, Scanner &s, const IxeRamConfig &cfg)
+    : engine(e), scanner(s), config(cfg) {
+
+  // Apply config to TUI fields
+  ghidra_image_base      = cfg.ghidra_image_base;
+  ct_path_input          = cfg.default_session_path;
+  selected_value_type_idx = cfg.default_value_type;
+  scanner.aligned_scan   = cfg.aligned_scan_default;
+  log_max_lines          = cfg.log_max_lines;
+
   add_log("Memory Inspector ready. Attach a PID to begin.");
+  add_log("Config loaded — theme:" + std::to_string((int)cfg.theme) +
+          "  aligned:" + (cfg.aligned_scan_default ? "on" : "off") +
+          "  session:" + cfg.default_session_path);
+
   if (engine.get_pid() != -1) {
     std::string comm_path =
         "/proc/" + std::to_string(engine.get_pid()) + "/comm";
@@ -41,11 +54,37 @@ TUI::TUI(MemoryEngine &e, Scanner &s) : engine(e), scanner(s) {
 }
 TUI::~TUI() {}
 
+// ─── Desktop Integration ───────────────────────────────────────────────
+void TUI::copy_to_clipboard(const std::string &data) {
+  // OSC 52 for terminal-level clipboard support (most modern terminals)
+  std::cout << "\x1b]52;c;" << data << "\a" << std::flush;
+
+  // External tool fallbacks for Linux
+  std::string cmd = "echo -n '" + data + "' | xclip -selection clipboard 2>/dev/null || "
+                    "echo -n '" + data + "' | wl-copy 2>/dev/null";
+  if (system(cmd.c_str()) == -1) {
+    add_log("! Clip engine failed");
+  } else {
+    add_log("✓ Copied: " + data);
+  }
+}
+
+void TUI::show_ctx_at(int x, int y, uintptr_t addr, const std::string &val,
+                      const std::string &mod, uintptr_t off) {
+  context_menu_x = x;
+  context_menu_y = y;
+  context_menu_addr = addr;
+  context_menu_val = val;
+  context_menu_mod = mod;
+  context_menu_offset = off;
+  show_context_menu = true;
+}
+
 // ─── Logging ─────────────────────────────────────────────────────────────
 void TUI::add_log(const std::string &msg) {
   std::lock_guard<std::mutex> lock(logs_mutex);
   logs.push_back("◈ " + msg);
-  if (logs.size() > 80)
+  if ((int)logs.size() > log_max_lines)
     logs.erase(logs.begin());
 }
 

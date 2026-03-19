@@ -1,5 +1,7 @@
+#include "Config.hpp"
 #include "MemoryEngine.hpp"
 #include "Scanner.hpp"
+#include "SetupWizard.hpp"
 #include "TUI.hpp"
 #include <iostream>
 #include <unistd.h>
@@ -11,9 +13,19 @@ int main() {
               << std::endl;
     return 1;
   }
+
+  // ── First-run wizard / config load ────────────────────────────────────────
+  IxeRamConfig cfg;
+  if (Config::is_first_run()) {
+    cfg = SetupWizard::run();
+  } else {
+    cfg = Config::load();
+  }
+
+  // ── Launch TUI ────────────────────────────────────────────────────────────
   MemoryEngine engine;
   Scanner scanner(engine);
-  TUI tui(engine, scanner);
+  TUI tui(engine, scanner, cfg);
 
   tui.run();
 
