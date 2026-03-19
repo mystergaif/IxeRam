@@ -95,3 +95,5 @@ IxeRam is dual-licensed:
 2. **InterXlicense v1.0** for commercial deployments.
 
 Made with 💜 by **myster_gif** @ **Internium Entertainment**.
+
+[![GitHub Star History Chart](https://api.star-history.com/svg?repos=mystergaif/IxeRam&type=Date)](https://star-history.com/#mystergaif/IxeRam&Date)
