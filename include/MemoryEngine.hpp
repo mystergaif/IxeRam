@@ -27,6 +27,16 @@ struct AccessRecord {
   bool is_write;
 };
 
+enum class HWBreakpointType { Execute = 0, Write = 1, ReadWrite = 3 };
+enum class HWBreakpointSize { Byte1 = 0, Byte2 = 1, Byte4 = 3, Byte8 = 2 };
+
+struct HWBreakpoint {
+  uintptr_t address;
+  HWBreakpointType type;
+  HWBreakpointSize size;
+  bool active = false;
+};
+
 class MemoryEngine {
 public:
   MemoryEngine();
@@ -67,10 +77,21 @@ public:
   // Clear all breakpoints
   void clear_breakpoints();
 
+  // ─── Hardware Breakpoints/Watchpoints (DR0-DR3) ──────────────────────
+  // Set hardware breakpoint/watchpoint in specified slot (0-3)
+  bool set_hw_breakpoint(int slot, uintptr_t address, HWBreakpointType type,
+                         HWBreakpointSize size);
+  // Clear hardware breakpoint in specified slot
+  bool clear_hw_breakpoint(int slot);
+  // Get active hardware breakpoints
+  std::vector<HWBreakpoint> get_hw_breakpoints() const;
+
 private:
   pid_t target_pid;
   bool process_paused = false;
   std::vector<MemoryRegion> regions;
   // breakpoint addr -> original byte
   std::map<uintptr_t, uint8_t> breakpoints;
+  // Hardware breakpoint slots
+  HWBreakpoint hw_breakpoints[4];
 };

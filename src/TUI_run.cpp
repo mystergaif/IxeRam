@@ -7,6 +7,7 @@
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/component_options.hpp"
 #include "ftxui/component/event.hpp"
+#include <csignal>
 #include "ftxui/dom/canvas.hpp"
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/color.hpp"
@@ -88,11 +89,7 @@ void TUI::run() {
     splash_screen.Loop(splash_comp);
   }
 
-  auto hex_str = [](uintptr_t v) {
-    std::ostringstream s;
-    s << "0x" << std::hex << std::uppercase << v;
-    return s.str();
-  };
+  // (using static TUI::hex_str)
 
   auto clickable = [&](const std::string &label, Color c) {
     return text(label) | color(c);
@@ -210,261 +207,67 @@ void TUI::run() {
 
 
 
-  auto do_set_ghidra_base = [&] {
-    try {
-      uintptr_t base = 0;
-      if (ghidra_base_input.size() > 2 && ghidra_base_input[0] == '0' &&
-          (ghidra_base_input[1] == 'x' || ghidra_base_input[1] == 'X'))
-        base = std::stoull(ghidra_base_input, nullptr, 16);
-      else
-        base = std::stoull(ghidra_base_input, nullptr, 10);
-      ghidra_image_base = base;
-      add_log("✓ Ghidra ImageBase set to " + hex_str(base));
-    } catch (...) {
-      add_log("✗ Invalid Ghidra base");
-    }
-    show_ghidra_base_modal = false;
-    ghidra_base_input.clear();
+  auto do_set_ghidra_base_logic = [&] {
+      try {
+          uintptr_t base = ghidra_base_input.empty() ? 0 : (ghidra_base_input.find("0x") == 0 ? std::stoull(ghidra_base_input, nullptr, 16) : std::stoull(ghidra_base_input, nullptr, 10));
+          ghidra_image_base = base;
+          add_log("✓ Ghidra ImageBase set to " + hex_str(base));
+      } catch(...) { add_log("✗ Invalid base"); }
+      show_ghidra_base_modal = false;
+      ghidra_base_input.clear();
   };
 
-  auto do_attach = [&] {
-    try {
-      pid_t pid = std::stoi(pid_input);
-      if (engine.attach(pid)) {
-        // Update process name
-        std::string comm_path = "/proc/" + std::to_string(pid) + "/comm";
-        std::ifstream comm_file(comm_path);
-        if (comm_file) {
-          std::getline(comm_file, target_process_name);
-        } else {
-          target_process_name = "Process " + std::to_string(pid);
-        }
-        add_log("✓ Attached to " + target_process_name);
-        update_memory_map();
-      } else
-        add_log("✗ Failed " + pid_input);
-    } catch (const std::exception &e) {
-      add_log("✗ " + std::string(e.what()));
-    } catch (...) {
-      add_log("✗ Bad PID or unknown error");
-    }
-    show_attach_modal = false;
+  auto do_attach_lambda = [&] {
+      try { do_attach(std::stoi(pid_input)); } catch(...) { add_log("✗ Bad PID"); }
+      show_attach_modal = false;
   };
 
-  auto do_initial_scan = [&] {
-    if (scanner.is_scanning())
-      return;
-    scanner.set_scanning(true);
-    add_log("⚡ Background Scan Started...");
-    std::thread([&, t = VALUE_TYPES[selected_value_type_idx], v = scan_value,
-                 n = std::string(VALUE_TYPE_NAMES[selected_value_type_idx])] {
-      scanner.initial_scan(t, v);
-      add_log("✓ Scan [" + n + "] → " +
-              std::to_string(scanner.get_results().size()) + " results");
-      screen.PostEvent(Event::Custom);
-    }).detach();
-    show_scan_modal = false;
+  auto do_initial_scan_lambda = [&] {
+      do_first_scan(scan_value);
+      show_scan_modal = false;
   };
 
-  auto do_next_scan = [&] {
-    if (scanner.is_scanning())
-      return;
-    scanner.set_scanning(true);
-    add_log("⚡ Background Refinement Started...");
-    std::thread([&, st = SCAN_TYPES[selected_scan_type_idx],
-                 nv = next_scan_value,
-                 sn = std::string(SCAN_TYPE_NAMES[selected_scan_type_idx])] {
-      scanner.next_scan(st, nv);
-      add_log("✓ Next [" + sn + "] → " +
-              std::to_string(scanner.get_results().size()) + " results");
-      screen.PostEvent(Event::Custom);
-    }).detach();
-    show_next_scan_modal = false;
-    next_scan_value.clear();
+  auto do_next_scan_lambda = [&] {
+      do_next_scan(next_scan_value);
+      show_next_scan_modal = false;
+      next_scan_value.clear();
   };
 
-  auto do_unknown_scan = [&] {
-    if (scanner.is_scanning())
-      return;
-    scanner.set_scanning(true);
-    add_log("⚡ Background Unknown Scan Started...");
-    std::thread([&, t = VALUE_TYPES[selected_value_type_idx],
-                 n = std::string(VALUE_TYPE_NAMES[selected_value_type_idx])] {
-      scanner.unknown_initial_scan(t);
-      add_log("✓ Unknown Scan [" + n + "] → " +
-              std::to_string(scanner.get_results().size()) + " results");
-      screen.PostEvent(Event::Custom);
-    }).detach();
-    show_scan_modal = false;
+  auto do_unknown_scan_lambda = [&] {
+      do_unknown_scan();
+      show_scan_modal = false;
   };
 
-  auto do_write = [&] {
-    if (tracked_address) {
-      if (scanner.write_value(tracked_address, write_value_input,
-                              VALUE_TYPES[selected_value_type_idx]))
-        add_log("✓ Wrote " + write_value_input + " → " +
-                hex_str(tracked_address));
-      else
-        add_log("✗ Write failed");
-    }
-    show_write_modal = false;
-    write_value_input.clear();
+  auto do_write_lambda = [&] {
+      do_write_memory(tracked_address, write_value_input);
+      show_write_modal = false;
+      write_value_input.clear();
   };
 
-  auto do_goto_action = [&] {
-    try {
-      uintptr_t addr = 0;
-      if (goto_addr_input.size() > 2 && goto_addr_input[0] == '0' &&
-          (goto_addr_input[1] == 'x' || goto_addr_input[1] == 'X'))
-        addr = std::stoull(goto_addr_input, nullptr, 16);
-      else
-        addr = std::stoull(goto_addr_input, nullptr, 10);
-      tracked_address = addr;
-      hex_dump.resize(128, 0);
-      engine.read_memory(addr, hex_dump.data(), 128);
-      if (show_disasm)
-        update_disasm();
-      add_log("→ Jumped to " + hex_str(addr));
-    } catch (...) {
-      add_log("✗ Invalid address");
-    }
-    show_goto_modal = false;
-    goto_addr_input.clear();
+  auto do_goto_lambda = [&] {
+      try {
+          uintptr_t addr = (goto_addr_input.find("0x") == 0) ? std::stoull(goto_addr_input, nullptr, 16) : std::stoull(goto_addr_input, nullptr, 10);
+          do_goto_address(addr);
+      } catch(...) { add_log("✗ Invalid address"); }
+      show_goto_modal = false;
+      goto_addr_input.clear();
   };
 
-  auto do_add_watch = [&] {
-    if (tracked_address) {
-      WatchEntry we;
-      we.addr = tracked_address;
-      we.description =
-          watch_desc_input.empty() ? "No description" : watch_desc_input;
-      we.type = scanner.get_value_type();
-      we.frozen = false;
-      watchlist.push_back(std::move(we));
-      add_log("✓ Added to Watchlist: " + hex_str(tracked_address));
-    }
-    show_watch_modal = false;
-    watch_desc_input.clear();
+  auto do_add_watch_lambda = [&] {
+      do_add_watch(tracked_address, watch_desc_input);
+      show_watch_modal = false;
+      watch_desc_input.clear();
   };
 
-  auto do_ptr_scan = [&] {
-    if (tracked_address) {
-      add_log("Pointer Scan for " + hex_str(tracked_address) + "...");
-      ptr_results = scanner.find_pointers(tracked_address, 2, 1024);
-      scanner.find_pointers_cache = ptr_results; // cache for save
-      add_log("✓ Found " + std::to_string(ptr_results.size()) +
-              " pointer paths");
-      main_tab = 4;
-    } else
-      add_log("✗ No address");
-    show_ptr_modal = false;
+  auto do_ptr_scan_lambda = [&] {
+      do_ptr_scan();
+      show_ptr_modal = false;
   };
 
-  // #10: Auto-attach by process name
-  auto do_autoattach = [&] {
-    if (autoattach_name_input.empty())
-      return;
-    add_log("⌚ Waiting for process: " + autoattach_name_input + "...");
-    std::thread([&] {
-      pid_t pid = MemoryEngine::wait_for_process(autoattach_name_input, 15000);
-      if (pid != -1) {
-        try {
-          if (engine.attach(pid)) {
-            target_process_name = autoattach_name_input;
-            add_log("✓ Auto-attached to '" + target_process_name +
-                    "' PID=" + std::to_string(pid));
-            update_memory_map();
-          } else
-            add_log("✗ Auto-attach failed: cannot access PID " +
-                    std::to_string(pid));
-        } catch (const std::exception &e) {
-          add_log("✗ " + std::string(e.what()));
-        }
-      } else {
-        add_log("✗ Process '" + autoattach_name_input +
-                "' not found (timeout)");
-      }
-      screen.PostEvent(Event::Custom);
-    }).detach();
-    show_autoattach_modal = false;
-    autoattach_name_input.clear();
-  };
-
-  // #8: Record toggle
-  auto do_record_toggle = [&] {
-    if (!scanner.recording_active) {
-      scanner.value_recording.clear();
-      scanner.recording_active = true;
-      record_start = std::chrono::steady_clock::now();
-      add_log("⏺ Recording started for " + hex_str(tracked_address));
-    } else {
-      scanner.recording_active = false;
-      add_log("⏹ Recording stopped. " +
-              std::to_string(scanner.value_recording.size()) + " samples");
-    }
-  };
-
-  // #8: Playback
-  auto do_start_playback = [&] {
-    if (scanner.value_recording.empty()) {
-      add_log("✗ No recording to play back");
-      return;
-    }
-    record_playing = true;
-    record_play_idx = 0;
-    add_log("▶ Playing back " + std::to_string(scanner.value_recording.size()) +
-            " samples");
-    std::thread([&] {
-      while (record_playing &&
-             record_play_idx < scanner.value_recording.size()) {
-        double v = scanner.value_recording[record_play_idx].value;
-        if (tracked_address) {
-          // Write value back to memory
-          float fv = (float)v;
-          engine.write_memory(tracked_address, &fv, sizeof(fv));
-        }
-        ++record_play_idx;
-        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60fps
-        screen.PostEvent(Event::Custom);
-      }
-      record_playing = false;
-      add_log("⏹ Playback finished");
-      screen.PostEvent(Event::Custom);
-    }).detach();
-  };
-
-  // #7: Set breakpoint on selected address
-  auto do_set_bp = [&] {
-    if (!tracked_address) {
-      add_log("✗ No address selected");
-      return;
-    }
-    if (engine.set_breakpoint(tracked_address)) {
-      add_log("⬤ Breakpoint set at " + hex_str(tracked_address));
-      add_log("  [Ctrl+B] to wait for hit (blocks briefly)");
-    } else {
-      add_log("✗ Failed to set breakpoint (need ptrace attach)");
-    }
-  };
-
-  // #7: Wait for breakpoint hit (non-blocking dispatch)
-  auto do_wait_bp = [&] {
-    add_log("⌚ Waiting for breakpoint hit...");
-    std::thread([&] {
-      uintptr_t hit = 0;
-      if (engine.wait_breakpoint(hit, 5000)) {
-        std::lock_guard<std::mutex> lock(bp_mutex);
-        // Copy newly recorded hits
-        bp_hits.insert(bp_hits.end(), engine.access_records.begin(),
-                       engine.access_records.end());
-        engine.access_records.clear();
-        add_log("⬤ Breakpoint hit at " + hex_str(hit));
-        tracked_address = hit;
-      } else {
-        add_log("✗ No breakpoint hit (timeout/no bp set)");
-      }
-      screen.PostEvent(Event::Custom);
-    }).detach();
+  auto do_autoattach_lambda = [&] {
+      do_auto_attach(autoattach_name_input);
+      show_autoattach_modal = false;
+      autoattach_name_input.clear();
   };
 
   // ──────────────────────────────────────────────────────────────────
@@ -1100,6 +903,95 @@ void TUI::run() {
   });
 
   // ──────────────────────────────────────────────────────────────────
+  // HEX EDITOR (READ/WRITE) TAB
+  // ──────────────────────────────────────────────────────────────────
+  auto hex_editor_tab_r = Renderer([&] {
+    if (hex_editor_base == 0) hex_editor_base = tracked_address;
+    if (hex_editor_buf.size() < (size_t)hex_editor_rows * 16) {
+        hex_editor_buf.resize(hex_editor_rows * 16, 0);
+    }
+    engine.read_memory(hex_editor_base, hex_editor_buf.data(), hex_editor_buf.size());
+
+    Elements rows;
+    rows.push_back(hbox({
+        text("  ") | size(WIDTH, EQUAL, 10),
+        text(" 00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F ") | color(C_DIM) | bold,
+        text("  ASCII           ") | color(C_DIM) | bold
+    }));
+    rows.push_back(separatorLight() | color(C_DIM));
+
+    for (int r = 0; r < hex_editor_rows; r++) {
+        Elements hex_cols;
+        Elements asc_cols;
+        std::ostringstream addr_s;
+        addr_s << " " << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << (hex_editor_base + r * 16) << " ";
+        hex_cols.push_back(text(addr_s.str()) | color(C_DIM));
+
+        for (int c = 0; c < 16; c++) {
+            int idx = r * 16 + c;
+            uint8_t b = hex_editor_buf[idx];
+            std::ostringstream bs;
+            bs << std::hex << std::uppercase << std::setfill('0') << std::setw(2) << (int)b;
+            
+            bool is_cursor = (idx == hex_editor_cursor_idx);
+            auto hex_cell = text(bs.str());
+            if (is_cursor) {
+                hex_cell = hex_cell | bold | bgcolor(C_ACCENT) | color(Color::Black);
+            } else if (b == 0) hex_cell = hex_cell | color(C_DIM);
+            else if (b >= 0x20 && b < 0x7F) hex_cell = hex_cell | color(C_GREEN);
+
+            hex_cols.push_back(hex_cell);
+            hex_cols.push_back(text(c == 7 ? "  " : " "));
+
+            char ch = (b >= 0x20 && b < 0x7f) ? (char)b : '.';
+            auto asc_cell = text(std::string(1, ch));
+            if (is_cursor) asc_cell = asc_cell | bold | color(C_ACCENT);
+            else asc_cell = asc_cell | color(ch == '.' ? C_DIM : C_CYAN);
+            asc_cols.push_back(asc_cell);
+        }
+        rows.push_back(hbox(hbox(std::move(hex_cols)), text(" │ ") | color(C_DIM), hbox(std::move(asc_cols))));
+    }
+
+    rows.push_back(separatorLight() | color(C_DIM));
+    rows.push_back(hbox({
+        text(" [ARROWS]Navigate  [0-9A-F]Edit Byte  [PgUp/Dn]Scroll  [G]Goto-Editor  [Z]Set HW Breakpoint ") | color(C_DIM)
+    }));
+
+    return vbox(std::move(rows));
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // HARDWARE BREAKPOINT MODAL
+  // ──────────────────────────────────────────────────────────────────
+  auto hw_bp_modal_r = Renderer([&] {
+    Elements items;
+    items.push_back(text(" ⬤ HARDWARE BREAKPOINTS / WATCHPOINTS ") | bold | color(C_RED) | hcenter);
+    items.push_back(separatorDouble());
+    
+    for (int i = 0; i < 4; i++) {
+        auto& slot = hw_ui_slots[i];
+        std::ostringstream sa; sa << "0x" << std::hex << std::uppercase << slot.addr;
+
+        auto row = hbox({
+            text(" SLOT " + std::to_string(i) + ": ") | color(C_DIM),
+            text(slot.active ? " ENABLED " : " DISABLED ") | color(slot.active ? C_GREEN : C_DIM) | bold,
+            text(" Addr: ") | color(C_DIM),
+            text(sa.str()) | color(C_CYAN) | size(WIDTH, EQUAL, 14),
+            text(" Type: ") | color(C_DIM),
+            text(slot.type_idx == 0 ? "Exec " : (slot.type_idx == 1 ? "Write" : "R/W  ")) | color(C_ORANGE),
+            text(" Size: ") | color(C_DIM),
+            text(std::to_string(slot.size_idx == 0 ? 1 : (slot.size_idx == 1 ? 2 : (slot.size_idx == 3 ? 4 : 8))) + "b") | color(C_YELLOW)
+        });
+        items.push_back(row | borderLight);
+    }
+    
+    items.push_back(separatorLight());
+    items.push_back(text(" [0-3] Clear Slot   [H] Set NEW at Cursor addr   [Esc] Close ") | color(C_DIM) | hcenter);
+    
+    return vbox(std::move(items)) | size(WIDTH, EQUAL, 70) | borderDouble | bgcolor(Color::RGB(10, 10, 20)) | center;
+  });
+
+  // ──────────────────────────────────────────────────────────────────
   // HEX / DISASM + GRAPH
   // ──────────────────────────────────────────────────────────────────
   auto hex_view = Renderer([&] {
@@ -1245,18 +1137,19 @@ void TUI::run() {
                text(hp ? std::to_string(engine.get_pid()) : "OFFLINE") |
                    color(hp ? C_GREEN : C_RED) | bold,
                filler(),
-               text(main_tab == 0   ? "[Addr]"
-                    : main_tab == 1 ? "[Map]"
+               text(main_tab == 0   ? "[ADR]"
+                    : main_tab == 1 ? "[MAP]"
                     : main_tab == 2 ? "[CG]"
-                    : main_tab == 3 ? "[Watch]"
-                    : main_tab == 4 ? "[Ptr]"
-                    : main_tab == 5 ? "[Disasm]"
-                    : main_tab == 6 ? "[Struct]"
-                                    : "[Sett]") |
+                    : main_tab == 3 ? "[WCH]"
+                    : main_tab == 4 ? "[PTR]"
+                    : main_tab == 5 ? "[ASM]"
+                    : main_tab == 6 ? "[STR]"
+                    : main_tab == 7 ? "[SET]"
+                                    : "[HEX]") |
                    color(C_ACCENT2) | bold}) |
              borderDouble | color(C_ACCENT),
          hbox({mk_tab(0, "A"), mk_tab(1, "M"), mk_tab(2, "C"), mk_tab(3, "W"),
-               mk_tab(4, "P"), mk_tab(5, "D"), mk_tab(6, "S"), mk_tab(7, "⚙")}) |
+               mk_tab(4, "P"), mk_tab(5, "D"), mk_tab(6, "S"), mk_tab(7, "⚙"), mk_tab(8, "H")}) |
              hcenter | borderLight});
 
     Elements sb;
@@ -1435,37 +1328,39 @@ void TUI::run() {
 
     auto mk_tab_btn = [&](int idx, const std::string &label) {
       bool sel = (main_tab == idx);
-      return text(" " + label + " ") | (sel ? bold : dim) |
-             color(sel ? Color::White : C_DIM) |
-             (sel ? bgcolor(C_SEL_BG) : bgcolor(Color::Default));
+      auto content = text(sel ? " ● " + label : "   " + label);
+      return content | (sel ? bold : dim) |
+             color(sel ? Color::White : Color::RGB(150, 150, 160)) |
+             (sel ? bgcolor(Color::RGB(40, 45, 70)) : bgcolor(Color::Default)) |
+             borderLight | color(sel ? C_ACCENT : C_DIM);
     };
 
     auto header = vbox(
-        {hbox({
-             text(" ⬡ IxeRam ") | bold | color(C_ACCENT),
+        hbox(
+             text(" ❖  ") | color(C_ACCENT) | bold,
+             text("IxeRam") | bold | color(Color::White),
              filler(),
-             text(hp ? " ◉ " + target_process_name + " (PID " +
-                           std::to_string(engine.get_pid()) + ") "
-                     : " ◉ OFFLINE ") |
-                 color(hp ? C_GREEN : C_RED) | bold,
-             text(" │ ") | color(C_DIM),
-              text(std::to_string(scanner.get_results().size()) + " results") |
-                  color(C_ACCENT),
-              text(" │ ") | color(C_DIM),
-              hbox(Elements{
-                  btn_toggle_sidebar->Render() | color(show_sidebar ? C_GREEN : C_DIM),
-                  btn_toggle_right->Render() | color(show_right_panel ? C_ACCENT : C_DIM),
-                  btn_toggle_log->Render() | color(show_log_panel ? C_YELLOW : C_DIM),
-              }),
-          }) | bgcolor(Color::RGB(10, 10, 20)) |
-              borderLight,
+             hbox(
+                 text(" ✦ PROCESS: ") | color(C_DIM),
+                 text(hp ? target_process_name : "OFFLINE") |
+                     color(hp ? C_GREEN : C_RED) | bold,
+                 hp ? (Element)(text(" [" + std::to_string(engine.get_pid()) + "]") | color(C_DIM)) : (Element)filler()
+             ) | borderLight | color(C_DIM),
+             filler(),
+             text(std::to_string(scanner.get_results().size()) + " results ") | color(C_ACCENT2) | bold,
+             hbox(
+                   btn_toggle_sidebar->Render() | color(show_sidebar ? C_GREEN : C_DIM),
+                   btn_toggle_right->Render() | color(show_right_panel ? C_ACCENT : C_DIM),
+                   btn_toggle_log->Render() | color(show_log_panel ? C_YELLOW : C_DIM)
+             ) | borderLight
+        ) | bgcolor(Color::RGB(10, 10, 20)) |
+               borderLight,
 
-         hbox({text(" TABS: ") | bold | color(C_ACCENT2),
-               mk_tab_btn(0, "Addresses"), mk_tab_btn(1, "MemMap"),
-               mk_tab_btn(2, "CallGraph"), mk_tab_btn(3, "Watchlist"),
-               mk_tab_btn(4, "PtrScan"), mk_tab_btn(5, "Disasm"),
-               mk_tab_btn(6, "Struct"), mk_tab_btn(7, "Settings"), filler(), text("[Tab] cycle ") | dim}) |
-             bgcolor(Color::RGB(15, 15, 25)) | borderLight});
+        hbox(text(" ⚡ TABS: ") | bold | color(C_ACCENT2),
+                mk_tab_btn(0, "ADR"), mk_tab_btn(1, "MAP"), mk_tab_btn(2, "CG "),
+                mk_tab_btn(3, "WCH"), mk_tab_btn(4, "PTR"), mk_tab_btn(5, "ASM"),
+                mk_tab_btn(6, "STR"), mk_tab_btn(7, "SET"), mk_tab_btn(8, "HEX"), filler(), text(" [TAB] CYCLE ") | dim
+        ) | bgcolor(Color::RGB(15, 15, 25)) | borderLight);
 
     Element center;
     if (main_tab == 0) {
@@ -1538,6 +1433,12 @@ void TUI::run() {
                         flex,
                     show_log_panel ? window(text(" ◈ LOG "), log_view->Render()) |
                         size(HEIGHT, EQUAL, 8) : filler() | size(HEIGHT, EQUAL, 0)) |
+               flex;
+    } else if (main_tab == 8) {
+        center = vbox(window(hbox(text(" ◈ HEX EDITOR "), filler(), text(hex_str(hex_editor_base)) | color(C_DIM)),
+                           hex_editor_tab_r->Render()) | flex,
+                     show_log_panel ? window(text(" ◈ LOG "), log_view->Render()) |
+                         size(HEIGHT, EQUAL, 8) : filler() | size(HEIGHT, EQUAL, 0)) |
                flex;
     } else {
       center = vbox(window(hbox(text(" ◈ SETTINGS "), filler()),
@@ -2005,6 +1906,10 @@ void TUI::run() {
     if (show_filter_modal)
       base = dbox(base, filter_modal_r->Render() | center);
 
+    // Hardware Breakpoint Modal
+    if (show_hw_bp_modal)
+      base = dbox(base, hw_bp_modal_r->Render() | center);
+
     // Header buttons event catch
     base = dbox(base, header_buttons->Render() | size(HEIGHT, EQUAL, 0) | size(WIDTH, EQUAL, 0));
 
@@ -2288,7 +2193,7 @@ void TUI::run() {
     }
     if (show_attach_modal) {
       if (ev == Event::Return) {
-        do_attach();
+        do_attach_lambda();
         return true;
       }
       if (ev == Event::Escape) {
@@ -2299,11 +2204,11 @@ void TUI::run() {
     }
     if (show_scan_modal) {
       if (ev == Event::Return) {
-        do_initial_scan();
+        do_initial_scan_lambda();
         return true;
       }
       if (ev == Event::Character('u') || ev == Event::Character('U')) {
-        do_unknown_scan();
+        do_unknown_scan_lambda();
         return true;
       }
       if (ev == Event::Escape) {
@@ -2314,7 +2219,7 @@ void TUI::run() {
     }
     if (show_next_scan_modal) {
       if (ev == Event::Return) {
-        do_next_scan();
+        do_next_scan_lambda();
         return true;
       }
       if (ev == Event::Escape) {
@@ -2325,7 +2230,7 @@ void TUI::run() {
     }
     if (show_write_modal) {
       if (ev == Event::Return) {
-        do_write();
+        do_write_lambda();
         return true;
       }
       if (ev == Event::Escape) {
@@ -2337,7 +2242,7 @@ void TUI::run() {
     }
     if (show_goto_modal) {
       if (ev == Event::Return) {
-        do_goto_action();
+        do_goto_lambda();
         return true;
       }
       if (ev == Event::Escape) {
@@ -2349,7 +2254,7 @@ void TUI::run() {
     }
     if (show_ghidra_base_modal) {
       if (ev == Event::Return) {
-        do_set_ghidra_base();
+        do_set_ghidra_base_logic();
         return true;
       }
       if (ev == Event::Escape) {
@@ -2361,7 +2266,7 @@ void TUI::run() {
     }
     if (show_watch_modal) {
       if (ev == Event::Return) {
-        do_add_watch();
+        do_add_watch_lambda();
         return true;
       }
       if (ev == Event::Escape) {
@@ -2495,7 +2400,7 @@ void TUI::run() {
 
     if (show_autoattach_modal) {
       if (ev == Event::Return) {
-        do_autoattach();
+        do_autoattach_lambda();
         return true;
       }
       if (ev == Event::Escape) {
@@ -2590,6 +2495,37 @@ void TUI::run() {
       }
       return input_filter_mod->OnEvent(ev);
     }
+
+    if (show_hw_bp_modal) {
+      if (ev == Event::Escape) {
+        show_hw_bp_modal = false;
+        return true;
+      }
+      if (ev.is_character()) {
+        char c = ev.character()[0];
+        if (c >= '0' && c <= '3') {
+          int slot = c - '0';
+          if (engine.clear_hw_breakpoint(slot)) {
+            hw_ui_slots[slot].active = false;
+            add_log("✓ Cleared HW Slot " + std::to_string(slot));
+          }
+          return true;
+        }
+        if (c == 'h' || c == 'H') {
+           // Find first free slot
+           int slot = -1;
+           for(int i=0; i<4; i++) if(!hw_ui_slots[i].active) { slot=i; break; }
+           if (slot != -1 && tracked_address) {
+             if (engine.set_hw_breakpoint(slot, tracked_address, HWBreakpointType::ReadWrite, HWBreakpointSize::Byte4)) {
+               hw_ui_slots[slot] = {true, tracked_address, 3, 3};
+               add_log("⬤ HW Watchpoint (R/W 4b) set at " + hex_str(tracked_address));
+             }
+           } else add_log("✗ No free HW slots or no address");
+           return true;
+        }
+      }
+      return true;
+    }
     if (ev == Event::Character('q') || ev == Event::Character('Q')) {
       engine.detach();
       screen.ExitLoopClosure()();
@@ -2628,27 +2564,7 @@ void TUI::run() {
       return true;
     }
     if (ev == Event::F5) {
-      if (tracked_address) {
-        if (frozen_addresses.count(tracked_address)) {
-          frozen_addresses.erase(tracked_address);
-          add_log("✓ Unfrozen " + hex_str(tracked_address));
-        } else {
-          size_t sz = valueTypeSize(scanner.get_value_type());
-          FrozenEntry fe;
-          fe.bytes.resize(sz, 0);
-          if (engine.read_memory(tracked_address, fe.bytes.data(), sz)) {
-            fe.display_val = scanner.read_value_str(tracked_address);
-            frozen_addresses[tracked_address] = fe;
-            add_log("❄ Frozen " + hex_str(tracked_address) + " = " +
-                    fe.display_val);
-          } else {
-            add_log("✗ Freeze failed: cannot read 0x" +
-                    hex_str(tracked_address));
-          }
-        }
-      } else {
-        add_log("✗ No address selected to freeze. Scan and select one first.");
-      }
+      do_toggle_freeze(tracked_address);
       return true;
     }
     if (ev == Event::F6) {
@@ -2670,14 +2586,7 @@ void TUI::run() {
       return true;
     }
     if (ev == Event::F8) {
-      scanner.clear_results();
-      categorized_results.clear();
-      value_history.clear();
-      last_vals_for_color.clear();
-      frozen_addresses.clear();
-      selected_result_idx = 0;
-      tracked_address = 0;
-      add_log("✓ Cleared");
+      do_clear_results();
       return true;
     }
     if (ev == Event::F9) {
@@ -2690,16 +2599,7 @@ void TUI::run() {
       return true;
     }
     if (ev == Event::F11) {
-      if (engine.get_pid() > 0) {
-        if (engine.is_paused()) {
-          if (engine.resume_process())
-            add_log("▶ Process Resumed");
-        } else {
-          if (engine.pause_process())
-            add_log("⏸ Process Paused (Frozen)");
-        }
-      } else
-        add_log("✗ No process attached");
+      do_pause_resume();
       return true;
     }
     // Moved to modal section above
@@ -2725,40 +2625,15 @@ void TUI::run() {
       return true;
     }
     if (ev == Event::Character('b') || ev == Event::Character('B')) {
-      if (tracked_address) {
-        add_log("Building CG from " + hex_str(tracked_address) + "...");
-        update_memory_map();
-        build_call_graph(tracked_address, cg_max_depth);
-        add_log("✓ CG: " + std::to_string(call_graph.size()) + " nodes");
-        main_tab = 2;
-      } else
-        add_log("✗ No address");
+      do_build_cg(tracked_address);
       return true;
     }
     if (ev == Event::Character('e') || ev == Event::Character('E')) {
-      std::string path =
-          "/tmp/ghidra_" + std::to_string(engine.get_pid()) + ".py";
-      export_ghidra_script(path);
+      do_ghidra_export("/tmp/ghidra_" + std::to_string(engine.get_pid()) + ".py");
       return true;
     }
     if (ev == Event::Character('x') || ev == Event::Character('X')) {
-      std::ofstream out("ixeram_results.json");
-      out << "[\n";
-      for (size_t i = 0; i < categorized_results.size(); ++i) {
-        auto &r = categorized_results[i];
-        out << "  {\n"
-            << "    \"address\": \"0x" << std::hex << r.addr << "\",\n"
-            << "    \"module\": \"" << r.module_name << "\",\n"
-            << "    \"offset\": \"0x" << std::hex << (r.addr - r.base_addr)
-            << "\"\n"
-            << "  }";
-        if (i < categorized_results.size() - 1)
-          out << ",";
-        out << "\n";
-      }
-      out << "]\n";
-      add_log("✓ Exported " + std::to_string(categorized_results.size()) +
-              " results to ixeram_results.json");
+      do_export_results_json("ixeram_results.json");
       return true;
     }
     if (ev == Event::Character('a') || ev == Event::Character('A')) {
@@ -2781,7 +2656,7 @@ void TUI::run() {
       return true;
     }
     if (ev == Event::Tab || ev == Event::Character('\t')) {
-      main_tab = (main_tab + 1) % 8;
+      main_tab = (main_tab + 1) % 9;
       return true;
     }
 
@@ -2793,6 +2668,7 @@ void TUI::run() {
     
     // Settings Tab specific logic
     if (main_tab == 7) {
+      // (existing settings logic)
       if (ev == Event::Return || ev == Event::Character('s') || ev == Event::Character('S')) {
           config.theme = static_cast<ColorTheme>(settings_theme_idx);
           try {
@@ -2816,6 +2692,56 @@ void TUI::run() {
           return true;
       }
       return settings_container->OnEvent(ev);
+    }
+
+    if (main_tab == 8) {
+        if (ev == Event::ArrowDown) {
+            hex_editor_cursor_idx = (hex_editor_cursor_idx + 16) % (hex_editor_rows * 16);
+            return true;
+        }
+        if (ev == Event::ArrowUp) {
+            hex_editor_cursor_idx = (hex_editor_cursor_idx - 16 + (hex_editor_rows * 16)) % (hex_editor_rows * 16);
+            return true;
+        }
+        if (ev == Event::ArrowRight) {
+            hex_editor_cursor_idx = (hex_editor_cursor_idx + 1) % (hex_editor_rows * 16);
+            return true;
+        }
+        if (ev == Event::ArrowLeft) {
+            hex_editor_cursor_idx = (hex_editor_cursor_idx - 1 + (hex_editor_rows * 16)) % (hex_editor_rows * 16);
+            return true;
+        }
+        if (ev == Event::PageDown) { hex_editor_base += 16 * hex_editor_rows; return true; }
+        if (ev == Event::PageUp) { hex_editor_base -= 16 * hex_editor_rows; return true; }
+        if (ev == Event::Character('g') || ev == Event::Character('G')) {
+            show_goto_modal = true;
+            return true;
+        }
+        if (ev == Event::Character('z') || ev == Event::Character('Z')) {
+            show_hw_bp_modal = true;
+            return true;
+        }
+        
+        // Hex Editing
+        if (ev.is_character()) {
+            std::string c = ev.character();
+            if (isxdigit(c[0])) {
+                int val = isdigit(c[0]) ? (c[0] - '0') : (tolower(c[0]) - 'a' + 10);
+                uintptr_t addr = hex_editor_base + hex_editor_cursor_idx;
+                uint8_t b;
+                engine.read_memory(addr, &b, 1);
+                if (!hex_editor_edit_nibble) {
+                    b = (uint8_t)((val << 4) | (b & 0x0F));
+                    hex_editor_edit_nibble = true;
+                } else {
+                    b = (uint8_t)((b & 0xF0) | val);
+                    hex_editor_edit_nibble = false;
+                    hex_editor_cursor_idx = (hex_editor_cursor_idx + 1) % (hex_editor_rows * 16);
+                }
+                do_hex_edit(addr, b);
+                return true;
+            }
+        }
     }
 
 
@@ -2896,7 +2822,7 @@ void TUI::run() {
       }
       // #7: Set breakpoint
       if (ev == Event::Character('z') || ev == Event::Character('Z')) {
-        do_set_bp();
+        do_set_bp(tracked_address);
         return true;
       }
       // Toggle access log tab
@@ -2990,4 +2916,328 @@ void TUI::run() {
 
   KittyGraphics::render_logo_placeholder();
   screen.Loop(component);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// COMMAND API IMPLEMENTATION
+// ─────────────────────────────────────────────────────────────────────
+
+void TUI::do_attach(int pid) {
+  try {
+    if (engine.attach(pid)) {
+      add_log("✓ Attached to PID: " + std::to_string(pid));
+      update_memory_map();
+    } else {
+      add_log("✗ Failed to attach to PID: " + std::to_string(pid));
+    }
+  } catch (const std::exception &e) {
+    add_log("✗ Error: " + std::string(e.what()));
+  }
+}
+
+void TUI::do_auto_attach(const std::string &name) {
+  if (name.empty())
+    return;
+  add_log("⌚ Waiting for process: " + name + "...");
+  std::thread([&, name] {
+    pid_t pid = MemoryEngine::wait_for_process(name, 15000);
+    if (pid != -1) {
+      if (engine.attach(pid)) {
+        std::lock_guard<std::recursive_mutex> lock(ui_mutex);
+        target_process_name = name;
+        add_log("✓ Auto-attached to '" + name +
+                "' PID=" + std::to_string(pid));
+        update_memory_map();
+      } else
+        add_log("✗ Auto-attach failed for PID " + std::to_string(pid));
+    } else {
+      add_log("✗ Process '" + name + "' not found (timeout)");
+    }
+    screen.PostEvent(ftxui::Event::Custom);
+  }).detach();
+}
+
+void TUI::do_first_scan(const std::string &val) {
+  if (scanner.is_scanning())
+    return;
+  scanner.set_scanning(true);
+  add_log("⚡ Background Scan Started...");
+  int vt_idx = selected_value_type_idx;
+  std::thread([&, vt_idx, val] {
+    scanner.initial_scan(VALUE_TYPES[vt_idx], val);
+    add_log("✓ Scan [" + std::string(VALUE_TYPE_NAMES[vt_idx]) + "] → " +
+            std::to_string(scanner.get_results().size()) + " results");
+    screen.PostEvent(ftxui::Event::Custom);
+  }).detach();
+}
+
+void TUI::do_next_scan(const std::string &val) {
+  if (scanner.is_scanning())
+    return;
+  scanner.set_scanning(true);
+  add_log("⚡ Background Refinement Started...");
+  int st_idx = selected_scan_type_idx;
+  std::thread([&, st_idx, val] {
+    scanner.next_scan(SCAN_TYPES[st_idx], val);
+    add_log("✓ Next [" + std::string(SCAN_TYPE_NAMES[st_idx]) + "] → " +
+            std::to_string(scanner.get_results().size()) + " results");
+    screen.PostEvent(ftxui::Event::Custom);
+  }).detach();
+}
+
+void TUI::do_unknown_scan() {
+  if (scanner.is_scanning())
+    return;
+  scanner.set_scanning(true);
+  add_log("⚡ Background Unknown Scan Started...");
+  int vt_idx = selected_value_type_idx;
+  std::thread([&, vt_idx] {
+    scanner.unknown_initial_scan(VALUE_TYPES[vt_idx]);
+    add_log("✓ Unknown Scan [" + std::string(VALUE_TYPE_NAMES[vt_idx]) + "] → " +
+            std::to_string(scanner.get_results().size()) + " results");
+    screen.PostEvent(ftxui::Event::Custom);
+  }).detach();
+}
+
+void TUI::do_clear_results() {
+  std::lock_guard<std::recursive_mutex> lock(ui_mutex);
+  scanner.clear_results();
+  categorized_results.clear();
+  value_history.clear();
+  last_vals_for_color.clear();
+  frozen_addresses.clear();
+  selected_result_idx = 0;
+  tracked_address = 0;
+  add_log("✓ Results cleared");
+}
+
+void TUI::do_write_memory(uintptr_t addr, const std::string &val) {
+  if (addr) {
+    if (scanner.write_value(addr, val, VALUE_TYPES[selected_value_type_idx]))
+      add_log("✓ Wrote " + val + " → " + hex_str(addr));
+    else
+      add_log("✗ Write failed");
+  }
+}
+
+void TUI::do_goto_address(uintptr_t addr) {
+  tracked_address = addr;
+  hex_dump.resize(128, 0);
+  engine.read_memory(addr, hex_dump.data(), 128);
+  if (show_disasm)
+    update_disasm();
+  add_log("→ Jumped to " + hex_str(addr));
+}
+
+void TUI::do_toggle_freeze(uintptr_t addr) {
+  if (!addr) return;
+  std::lock_guard<std::recursive_mutex> lock(ui_mutex);
+  if (frozen_addresses.count(addr)) {
+    frozen_addresses.erase(addr);
+    add_log("✓ Unfrozen " + hex_str(addr));
+  } else {
+    size_t sz = valueTypeSize(scanner.get_value_type());
+    FrozenEntry fe;
+    fe.bytes.resize(sz, 0);
+    if (engine.read_memory(addr, fe.bytes.data(), sz)) {
+      fe.display_val = scanner.read_value_str(addr);
+      frozen_addresses[addr] = fe;
+      add_log("❄ Frozen " + hex_str(addr) + " = " + fe.display_val);
+    } else {
+      add_log("✗ Freeze failed: cannot read " + hex_str(addr));
+    }
+  }
+}
+
+void TUI::do_add_watch(uintptr_t addr, const std::string &desc) {
+  if (addr) {
+    WatchEntry we;
+    we.addr = addr;
+    we.description = desc.empty() ? "No description" : desc;
+    we.type = scanner.get_value_type();
+    we.frozen = false;
+    watchlist.push_back(std::move(we));
+    add_log("✓ Added to Watchlist: " + hex_str(addr));
+  }
+}
+
+void TUI::do_ptr_scan() {
+  if (tracked_address) {
+    add_log("Pointer Scan for " + hex_str(tracked_address) + "...");
+    std::thread([&, addr = tracked_address] {
+        auto res = scanner.find_pointers(addr, 2, 1024);
+        std::lock_guard<std::recursive_mutex> lock(ui_mutex);
+        ptr_results = res;
+        scanner.find_pointers_cache = res;
+        add_log("✓ Found " + std::to_string(ptr_results.size()) + " pointer paths");
+        main_tab = 4;
+        screen.PostEvent(ftxui::Event::Custom);
+    }).detach();
+  } else {
+    add_log("✗ No address selected");
+  }
+}
+
+void TUI::do_build_cg(uintptr_t addr) {
+    if (!addr) {
+        add_log("✗ No address for CG");
+        return;
+    }
+    add_log("Building CG from " + hex_str(addr) + "...");
+    update_memory_map();
+    build_call_graph(addr, cg_max_depth);
+    add_log("✓ CG: " + std::to_string(call_graph.size()) + " nodes");
+    main_tab = 2;
+}
+
+void TUI::do_set_bp(uintptr_t addr) {
+  if (!addr) return;
+  if (engine.set_breakpoint(addr)) {
+    add_log("⬤ Breakpoint set at " + hex_str(addr));
+  } else {
+    add_log("✗ Failed to set breakpoint (need attach)");
+  }
+}
+
+void TUI::do_wait_bp() {
+  add_log("⌚ Waiting for breakpoint hit...");
+  std::thread([&] {
+    uintptr_t hit = 0;
+    if (engine.wait_breakpoint(hit, 5000)) {
+      std::lock_guard<std::mutex> lock(bp_mutex);
+      bp_hits.insert(bp_hits.end(), engine.access_records.begin(),
+                     engine.access_records.end());
+      engine.access_records.clear();
+      add_log("⬤ Breakpoint hit at " + hex_str(hit));
+      tracked_address = hit;
+    } else {
+      add_log("✗ No breakpoint hit (timeout)");
+    }
+    screen.PostEvent(ftxui::Event::Custom);
+  }).detach();
+}
+
+void TUI::do_record_toggle() {
+  if (!scanner.recording_active) {
+    scanner.value_recording.clear();
+    scanner.recording_active = true;
+    record_start = std::chrono::steady_clock::now();
+    add_log("⏺ Recording started for " + hex_str(tracked_address));
+  } else {
+    scanner.recording_active = false;
+    add_log("⏹ Recording stopped. " + std::to_string(scanner.value_recording.size()) + " samples");
+  }
+}
+
+void TUI::do_start_playback() {
+  if (scanner.value_recording.empty()) {
+    add_log("✗ No recording to play back");
+    return;
+  }
+  record_playing = true;
+  record_play_idx = 0;
+  add_log("▶ Playing back " + std::to_string(scanner.value_recording.size()) + " samples");
+  std::thread([&] {
+    while (record_playing && record_play_idx < scanner.value_recording.size()) {
+      double v = scanner.value_recording[record_play_idx].value;
+      if (tracked_address) {
+        float fv = (float)v;
+        engine.write_memory(tracked_address, &fv, sizeof(fv));
+      }
+      ++record_play_idx;
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+      screen.PostEvent(ftxui::Event::Custom);
+    }
+    record_playing = false;
+    add_log("⏹ Playback finished");
+    screen.PostEvent(ftxui::Event::Custom);
+  }).detach();
+}
+
+void TUI::do_hex_edit(uintptr_t addr, uint8_t val) {
+    if (engine.write_memory(addr, &val, 1)) {
+        // refresh buffer if it's the tracked address region
+        if (addr >= tracked_address && addr < tracked_address + 128) {
+            engine.read_memory(tracked_address, hex_dump.data(), 128);
+        }
+    }
+}
+
+void TUI::do_set_hw_bp(int slot, uintptr_t addr, HWBreakpointType type, HWBreakpointSize size) {
+    if (engine.set_hw_breakpoint(slot, addr, type, size)) {
+        hw_ui_slots[slot].active = true;
+        hw_ui_slots[slot].addr = addr;
+        // map type/size to indices for UI if needed
+        add_log("✓ HW BP " + std::to_string(slot) + " set at " + hex_str(addr));
+    } else {
+        add_log("✗ Failed to set HW BP");
+    }
+}
+
+void TUI::do_clear_hw_bp(int slot) {
+    if (engine.clear_hw_breakpoint(slot)) {
+        hw_ui_slots[slot].active = false;
+        add_log("✓ HW BP " + std::to_string(slot) + " cleared");
+    }
+}
+
+void TUI::do_pause_resume() {
+  if (engine.get_pid() == -1) {
+    add_log("✗ No process attached");
+    return;
+  }
+  if (engine.is_paused()) {
+    if (engine.resume_process())
+      add_log("▶ Process Resumed");
+    else
+      add_log("✗ Failed to resume");
+  } else {
+    if (engine.pause_process())
+      add_log("⏸ Process Paused (Frozen)");
+    else
+      add_log("✗ Failed to pause");
+  }
+}
+
+void TUI::do_save_ct(const std::string &path) {
+    if (save_cheat_table(path)) add_log("💾 Saved session to " + path);
+    else add_log("✗ Save failed");
+}
+
+void TUI::do_load_ct(const std::string &path) {
+    if (load_cheat_table(path)) add_log("📂 Loaded session from " + path);
+    else add_log("✗ Load failed");
+}
+
+void TUI::do_export_results_json(const std::string &path) {
+    std::ofstream out(path);
+    if (!out) {
+        add_log("✗ Cannot export to " + path);
+        return;
+    }
+    out << "[\n";
+    for (size_t i = 0; i < categorized_results.size(); ++i) {
+      auto &r = categorized_results[i];
+      out << "  {\n"
+          << "    \"address\": \"" << hex_str(r.addr) << "\",\n"
+          << "    \"module\": \"" << r.module_name << "\",\n"
+          << "    \"offset\": \"" << hex_str(r.addr - r.base_addr) << "\"\n"
+          << "  }";
+      if (i < categorized_results.size() - 1) out << ",";
+      out << "\n";
+    }
+    out << "]\n";
+    add_log("✓ Exported " + std::to_string(categorized_results.size()) + " results to " + path);
+}
+
+void TUI::do_ghidra_export(const std::string &path) {
+    export_ghidra_script(path);
+}
+
+void TUI::do_kill_process() {
+    if (engine.get_pid() != -1) {
+        add_log("☠ Killing process " + std::to_string(engine.get_pid()));
+        kill(engine.get_pid(), SIGKILL);
+        engine.detach();
+    }
 }

@@ -8,6 +8,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -143,6 +144,22 @@ private:
     uintptr_t file_offset = 0; // from /proc/maps
   };
   std::vector<MapEntry> map_entries;
+  // Hex Editor State
+  uintptr_t hex_editor_base = 0;
+  int hex_editor_cursor_idx = 0;       // 0-15 across, multiple rows
+  bool hex_editor_edit_nibble = false; // editing first or second nibble?
+  std::vector<uint8_t> hex_editor_buf;
+  int hex_editor_rows = 16;
+
+  // Hardware Breakpoint State
+  struct HW_UI_Slot {
+    bool active = false;
+    uintptr_t addr = 0;
+    int type_idx = 0; // 0=Exec, 1=Write, 3=ReadWrite
+    int size_idx = 0; // 0=1b, 1=2b, 3=4b, 2=8b
+  } hw_ui_slots[4];
+  bool show_hw_bp_modal = false;
+
   void update_memory_map();
 
   // ─── Call Graph ─────────────────────────────────────────────────────
@@ -243,7 +260,37 @@ private:
   int selected_bp_idx = 0;
   bool show_access_tab = false; // sub-view inside Disasm tab
 
-  // ─── Helpers ────────────────────────────────────────────────────────
+  // ─── Command API (Internal logic extracted from UI) ────────────────
+public:
+  void do_attach(int pid);
+  void do_auto_attach(const std::string &name);
+  void do_first_scan(const std::string &val);
+  void do_next_scan(const std::string &val);
+  void do_unknown_scan();
+  void do_clear_results();
+  void do_write_memory(uintptr_t addr, const std::string &val);
+  void do_goto_address(uintptr_t addr);
+  void do_toggle_freeze(uintptr_t addr);
+  void do_add_watch(uintptr_t addr, const std::string &desc = "");
+  void do_ptr_scan();
+  void do_build_cg(uintptr_t addr);
+  void do_set_bp(uintptr_t addr);
+  void do_wait_bp();
+  void do_record_toggle();
+  void do_start_playback();
+  void do_hex_edit(uintptr_t addr, uint8_t val);
+  void do_set_hw_bp(int slot, uintptr_t addr, HWBreakpointType type,
+                    HWBreakpointSize size);
+  void do_clear_hw_bp(int slot);
+  void do_pause_resume();
+  void do_save_ct(const std::string &path);
+  void do_load_ct(const std::string &path);
+  void do_export_results_json(const std::string &path);
+  void do_ghidra_export(const std::string &path);
+  void do_kill_process();
+
+private:
+  // (existing private members)
   void add_log(const std::string &message);
   void update_tracking_data();
   void update_disasm();
@@ -255,7 +302,14 @@ private:
   bool save_cheat_table(const std::string &path);
   bool load_cheat_table(const std::string &path);
 
-  // Ghidra export
-  void export_ghidra_script(const std::string &path);
+  // ─── Helpers ────────────────────────────────────────────────────────
+  static std::string hex_str(uintptr_t v) {
+      std::ostringstream s;
+      s << "0x" << std::hex << std::uppercase << v;
+      return s.str();
+  }
+
+  // Ghidra image base
   uintptr_t ghidra_image_base = 0x100000; // Default for x64 ELF
+  void export_ghidra_script(const std::string &path);
 };

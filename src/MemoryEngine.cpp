@@ -234,10 +234,18 @@ pid_t MemoryEngine::wait_for_process(const std::string &name, int max_ms) {
 }
 
 // ─── Software Breakpoints via ptrace ─────────────────────────────────────────
-#include <cerrno>
+#include <cstddef>
 #include <sys/ptrace.h>
 #include <sys/user.h>
 #include <sys/wait.h>
+
+#ifndef offsetof
+#define offsetof(TYPE, MEMBER) ((size_t) & ((TYPE *)0)->MEMBER)
+#endif
+
+#define DR_ADDR(slot) (offsetof(struct user, u_debugreg[0]) + (slot) * sizeof(long))
+#define DR_CONTROL offsetof(struct user, u_debugreg[7])
+#define DR_STATUS offsetof(struct user, u_debugreg[6])
 
 bool MemoryEngine::set_breakpoint(uintptr_t address) {
   if (target_pid <= 0)
@@ -283,7 +291,7 @@ bool MemoryEngine::remove_breakpoint(uintptr_t address) {
 }
 
 bool MemoryEngine::wait_breakpoint(uintptr_t &hit_addr, int timeout_ms) {
-  if (target_pid <= 0 || breakpoints.empty())
+  if (target_pid <= 0)
     return false;
 
   if (ptrace(PTRACE_CONT, target_pid, nullptr, nullptr) != 0)
@@ -297,18 +305,43 @@ bool MemoryEngine::wait_breakpoint(uintptr_t &hit_addr, int timeout_ms) {
       if (WIFSTOPPED(wstatus) && WSTOPSIG(wstatus) == SIGTRAP) {
         struct user_regs_struct regs;
         if (ptrace(PTRACE_GETREGS, target_pid, nullptr, &regs) == 0) {
-          hit_addr = (uintptr_t)(regs.rip - 1);
+          // Check DR6 for hardware breakpoint hits
+          long dr6 = ptrace(PTRACE_PEEKUSER, target_pid, DR_STATUS, nullptr);
+          bool hw_hit = false;
+          for (int i = 0; i < 4; ++i) {
+            if (dr6 & (1L << i)) {
+              hit_addr = hw_breakpoints[i].address;
+              hw_hit = true;
+              // Clear DR6 bit so it doesn't fire again immediately
+              dr6 &= ~(1L << i);
+              ptrace(PTRACE_POKEUSER, target_pid, DR_STATUS, (void *)dr6);
+              break;
+            }
+          }
+
+          if (!hw_hit) {
+            // Probably software breakpoint (int3)
+            hit_addr = (uintptr_t)(regs.rip - 1);
+            if (breakpoints.count(hit_addr)) {
+               regs.rip = regs.rip - 1;
+               ptrace(PTRACE_SETREGS, target_pid, nullptr, &regs);
+               remove_breakpoint(hit_addr);
+            } else {
+               // Unknown trap
+               hit_addr = regs.rip;
+            }
+          }
+
           AccessRecord ar;
-          ar.rip = regs.rip - 1;
+          ar.rip = regs.rip;
           ar.rax = regs.rax;
           ar.rbx = regs.rbx;
           ar.rcx = regs.rcx;
           ar.rdx = regs.rdx;
-          ar.is_write = false;
+          // Determine if it was a write if possible (heuristic or from DR7 type)
+          ar.is_write = false; 
           access_records.push_back(ar);
-          regs.rip = regs.rip - 1;
-          ptrace(PTRACE_SETREGS, target_pid, nullptr, &regs);
-          remove_breakpoint(hit_addr);
+          
           process_paused = true;
           return true;
         }
@@ -333,6 +366,73 @@ void MemoryEngine::clear_breakpoints() {
         ptrace(PTRACE_POKETEXT, target_pid, (void *)addr, (void *)restored);
       }
     }
+    // Clear all hardware breakpoints
+    for (int i = 0; i < 4; ++i) {
+      if (hw_breakpoints[i].active)
+        clear_hw_breakpoint(i);
+    }
   }
   breakpoints.clear();
+}
+
+bool MemoryEngine::set_hw_breakpoint(int slot, uintptr_t address,
+                                     HWBreakpointType type,
+                                     HWBreakpointSize size) {
+  if (target_pid <= 0 || slot < 0 || slot > 3)
+    return false;
+
+  // 1. Set the address register
+  if (ptrace(PTRACE_POKEUSER, target_pid, DR_ADDR(slot), (void *)address) != 0)
+    return false;
+
+  // 2. Read current DR7
+  long dr7 = ptrace(PTRACE_PEEKUSER, target_pid, DR_CONTROL, nullptr);
+
+  // 3. Configure the slot in DR7
+  // Bits: 0, 2, 4, 6 (L0-L3)
+  // RW: 16-17, 20-21, 24-25, 28-29
+  // LEN: 18-19, 22-23, 26-27, 30-31
+
+  // Enable L(slot)
+  dr7 |= (1L << (slot * 2));
+
+  // Set RW and LEN
+  int rw_offset = 16 + (slot * 4);
+  int len_offset = 18 + (slot * 4);
+
+  dr7 &= ~(3L << rw_offset);
+  dr7 |= ((long)type << rw_offset);
+
+  dr7 &= ~(3L << len_offset);
+  dr7 |= ((long)size << len_offset);
+
+  if (ptrace(PTRACE_POKEUSER, target_pid, DR_CONTROL, (void *)dr7) != 0)
+    return false;
+
+  hw_breakpoints[slot] = {address, type, size, true};
+  return true;
+}
+
+bool MemoryEngine::clear_hw_breakpoint(int slot) {
+  if (target_pid <= 0 || slot < 0 || slot > 3)
+    return false;
+
+  long dr7 = ptrace(PTRACE_PEEKUSER, target_pid, DR_CONTROL, nullptr);
+  // Disable L(slot)
+  dr7 &= ~(1L << (slot * 2));
+
+  if (ptrace(PTRACE_POKEUSER, target_pid, DR_CONTROL, (void *)dr7) != 0)
+    return false;
+
+  hw_breakpoints[slot].active = false;
+  return true;
+}
+
+std::vector<HWBreakpoint> MemoryEngine::get_hw_breakpoints() const {
+  std::vector<HWBreakpoint> res;
+  for (int i = 0; i < 4; ++i) {
+    if (hw_breakpoints[i].active)
+      res.push_back(hw_breakpoints[i]);
+  }
+  return res;
 }
