@@ -20,14 +20,27 @@ Unlike traditional GUI-based tools, IxeRam is designed for speed, low overhead, 
     - Support for Int8/16/32/64, Float, Double, Strings, and AOB (Array of Bytes) with wildcards.
     - **Multi-threaded** search and refinement.
     - Real-time value tracking with color-coded changes (Red = Up, Blue = Down).
-- 🧩 **Static Pointer Discovery**: Find pointer paths that persist across process restarts (multi-level pointer scanning).
-- ⚡ **Interactive Dizassembelr**: Real-time x86-64 disassembly with syntax highlighting and jump-to-address support.
+- Chain-link **Static Pointer Discovery**: Find pointer paths that persist across process restarts (multi-level pointer scanning).
+- 🧬 **Modern Qt 6 GUI**: 
+    - Full-featured graphical interface with **Tokyo Night (Dark Mode)** aesthetics.
+    - Glassmorphism transitions and responsive sidebar navigation.
+- ⚡ **Interactive Disassembler**: Real-time x86-64 disassembly with syntax highlighting and jump-to-address support.
+- 🎯 **Live Execution Tracer (Memory Graph)**:
+    - **Heat-Map Logic**: Visualize code paths in real-time. Arrows change color (Green -> Orange -> Red) based on execution frequency.
+    - **Register Inspection**: Inspect CPU register states (RAX, RBX, etc.) directly on the graph arrows during live execution.
+    - **Step-Over Engine**: Professional `ptrace`-based tracer that handles single-stepping and breakpoint persistence.
 - 🛠️ **Live Patching**: Write assembly instructions directly into memory using the integrated **Keystone Engine**.
 - 📐 **Structure Dissector**: Visualize memory regions as complex structures with real-time value updates.
 - ⛓️ **Call Graph Analysis**: Heuristic-based call graph construction for analyzing function flows and identifying logic.
 - ❄️ **Memory Freezing**: Lock values in memory to prevent the process from changing them.
 - 📤 **Data Export**: Export results to JSON or Ghidra Python scripts for automation.
 - 🕒 **Integrated Speedhack**: Control the flow of time via `LD_PRELOAD` shared memory config.
+
+## 🎨 New GUI Experience
+
+![IxeRam Qt GUI](image_gui.png)
+
+*The new Qt 6 interface provides a professional-grade environment for deep analysis, featuring our unique **Live Execution Trace** system.*
 
 ## 🏁 Getting Started
 

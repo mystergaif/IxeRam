@@ -144,6 +144,7 @@ public:
 
   ValueType get_value_type() const { return current_value_type; }
   bool is_first_scan() const { return first_scan; }
+  void reset_first_scan() { first_scan = true; }
 
   // Read current value at address as formatted string
   std::string read_value_str(uintptr_t address) const;

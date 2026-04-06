@@ -5,6 +5,11 @@
 #include <stdexcept>
 #include <sys/uio.h>
 #include <unistd.h>
+#include <sys/ptrace.h>
+#include <sys/user.h>
+#include <sys/wait.h>
+#include <cstddef>
+#include <iostream>
 
 MemoryEngine::MemoryEngine() : target_pid(-1) {}
 
@@ -23,11 +28,25 @@ bool MemoryEngine::attach(pid_t pid) {
 
   target_pid = pid;
   update_maps();
-  return true;
+  
+  target_pid = pid;
+  update_maps();
+  
+  // Just check if we CAN attach, then detach immediately
+  if (ptrace(PTRACE_ATTACH, target_pid, nullptr, nullptr) == 0) {
+      int status;
+      waitpid(target_pid, &status, 0);
+      ptrace(PTRACE_DETACH, target_pid, nullptr, nullptr);
+      return true;
+  }
+  return false;
 }
 
 void MemoryEngine::detach() {
-  clear_breakpoints();
+  if (target_pid != -1) {
+      clear_breakpoints();
+      ptrace(PTRACE_DETACH, target_pid, nullptr, nullptr);
+  }
   target_pid = -1;
   regions.clear();
 }
@@ -150,7 +169,10 @@ std::vector<MemoryRegion> MemoryEngine::update_maps() {
 bool MemoryEngine::pause_process() {
   if (target_pid <= 0)
     return false;
+  // If attached via ptrace, we should wait until the process stops actually
   if (kill(target_pid, SIGSTOP) == 0) {
+    int status;
+    waitpid(target_pid, &status, 0); // Synchronous wait
     process_paused = true;
     return true;
   }
@@ -160,6 +182,14 @@ bool MemoryEngine::pause_process() {
 bool MemoryEngine::resume_process() {
   if (target_pid <= 0)
     return false;
+    
+  // If we are tracing (ptrace attached), we must use ptrace(PTRACE_CONT)
+  // to continue execution properly after a SIGSTOP/SIGTRAP.
+  if (ptrace(PTRACE_CONT, target_pid, nullptr, nullptr) == 0) {
+      process_paused = false;
+      return true;
+  }
+  
   if (kill(target_pid, SIGCONT) == 0) {
     process_paused = false;
     return true;
@@ -234,11 +264,6 @@ pid_t MemoryEngine::wait_for_process(const std::string &name, int max_ms) {
 }
 
 // ─── Software Breakpoints via ptrace ─────────────────────────────────────────
-#include <cstddef>
-#include <sys/ptrace.h>
-#include <sys/user.h>
-#include <sys/wait.h>
-
 #ifndef offsetof
 #define offsetof(TYPE, MEMBER) ((size_t) & ((TYPE *)0)->MEMBER)
 #endif
@@ -255,17 +280,20 @@ bool MemoryEngine::set_breakpoint(uintptr_t address) {
 
   errno = 0;
   long orig = ptrace(PTRACE_PEEKTEXT, target_pid, (void *)address, nullptr);
-  if (errno != 0)
+  if (errno != 0) {
+    std::cerr << "[!] Breakpoint PEEK failed at 0x" << std::hex << address << " (errno " << std::dec << errno << "). Attached?\n";
     return false;
+  }
 
   uint8_t orig_byte = (uint8_t)(orig & 0xFF);
   breakpoints[address] = orig_byte;
 
   long patched = (orig & ~0xFFL) | 0xCC;
-  if (ptrace(PTRACE_POKETEXT, target_pid, (void *)address, (void *)patched) !=
-      0)
+  if (ptrace(PTRACE_POKETEXT, target_pid, (void *)address, (void *)patched) != 0) {
     return false;
-
+  }
+  
+  breakpoints[address] = orig_byte;
   return true;
 }
 
@@ -293,10 +321,7 @@ bool MemoryEngine::remove_breakpoint(uintptr_t address) {
 bool MemoryEngine::wait_breakpoint(uintptr_t &hit_addr, int timeout_ms) {
   if (target_pid <= 0)
     return false;
-
-  if (ptrace(PTRACE_CONT, target_pid, nullptr, nullptr) != 0)
-    return false;
-
+    
   auto start = std::chrono::steady_clock::now();
   while (true) {
     int wstatus = 0;
@@ -338,7 +363,6 @@ bool MemoryEngine::wait_breakpoint(uintptr_t &hit_addr, int timeout_ms) {
           ar.rbx = regs.rbx;
           ar.rcx = regs.rcx;
           ar.rdx = regs.rdx;
-          // Determine if it was a write if possible (heuristic or from DR7 type)
           ar.is_write = false; 
           access_records.push_back(ar);
           
@@ -346,8 +370,8 @@ bool MemoryEngine::wait_breakpoint(uintptr_t &hit_addr, int timeout_ms) {
           return true;
         }
       }
-      return false;
     }
+    
     auto now = std::chrono::steady_clock::now();
     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - start)
             .count() >= timeout_ms)
@@ -435,4 +459,29 @@ std::vector<HWBreakpoint> MemoryEngine::get_hw_breakpoints() const {
       res.push_back(hw_breakpoints[i]);
   }
   return res;
+}
+
+bool MemoryEngine::attach_ptrace() {
+  if (target_pid <= 0) return false;
+  if (ptrace(PTRACE_ATTACH, target_pid, nullptr, nullptr) != 0) {
+      std::cerr << "[!] ptrace(PTRACE_ATTACH) failed (errno " << errno << ")\n";
+      return false;
+  }
+  int status;
+  waitpid(target_pid, &status, 0); // Synchronous stop
+  return true;
+}
+
+bool MemoryEngine::detach_ptrace() {
+  if (target_pid <= 0) return false;
+  return ptrace(PTRACE_DETACH, target_pid, nullptr, nullptr) == 0;
+}
+
+bool MemoryEngine::step_over() {
+  if (target_pid <= 0) return false;
+  // Let the process execute exactly one instruction (which we just un-breakpointed)
+  if (ptrace(PTRACE_SINGLESTEP, target_pid, nullptr, nullptr) != 0) return false;
+  int status;
+  waitpid(target_pid, &status, 0); 
+  return true;
 }

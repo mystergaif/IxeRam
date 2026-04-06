@@ -57,6 +57,10 @@ public:
   bool resume_process();
   bool kill_process();
   bool is_paused() const { return process_paused; }
+  
+  bool attach_ptrace();
+  bool detach_ptrace();
+  bool step_over(); // New helper
 
   // ─── Auto-attach by process name ──────────────────────────────────
   // Returns PID of first matching process, or -1 if not found
