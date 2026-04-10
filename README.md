@@ -10,9 +10,6 @@
   <a href="https://etherscan.io/address/0xee985a9487407c527d873af7a226767e5bb48141">
     <img src="https://img.shields.io/badge/Donate%20with-Ethereum-3C3C3D?style=for-the-badge&logo=ethereum&logoColor=white" alt="Donate with Ethereum">
   </a>
-  <a href="https://github.com/sponsors/myster_gaif">
-    <img src="https://img.shields.io/badge/Sponsor-GitHub-EA4AAA?style=for-the-badge&logo=github-sponsors&logoColor=white" alt="Sponsor on GitHub">
-  </a>
 </p>
 
 **Ethereum (ERC-20):** `0xee985a9487407C527D873Af7A226767E5bB48141`
