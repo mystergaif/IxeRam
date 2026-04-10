@@ -2,6 +2,23 @@
 
 ![IxeRam TUI](image.png)
 
+## 💖 Support & Donations
+
+**IxeRam** is developed with passion! If this tool helps you, please consider supporting its development. Every contribution helps add features like the Call Graph and Structure Dissector.
+
+<p align="left">
+  <a href="https://etherscan.io/address/0xee985a9487407c527d873af7a226767e5bb48141">
+    <img src="https://img.shields.io/badge/Donate%20with-Ethereum-3C3C3D?style=for-the-badge&logo=ethereum&logoColor=white" alt="Donate with Ethereum">
+  </a>
+  <a href="https://github.com/sponsors/myster_gaif">
+    <img src="https://img.shields.io/badge/Sponsor-GitHub-EA4AAA?style=for-the-badge&logo=github-sponsors&logoColor=white" alt="Sponsor on GitHub">
+  </a>
+</p>
+
+**Ethereum (ERC-20):** `0xee985a9487407C527D873Af7A226767E5bB48141`
+
+---
+
 **IxeRam** is a high-performance, terminal-native memory scanner and debugger for Linux. It provides a "Cheat Engine-like" experience for developers and reverse engineers who prefer the terminal or work over SSH.
 
 ## 🚀 Why IxeRam?
@@ -102,27 +119,8 @@ sudo ./build/memdebug
 - **TUI_run.cpp**: Main UI loop using FTXUI with virtual list optimizations for handling 1M+ results.
 - **speedhack.c**: Shared library for `LD_PRELOAD` time manipulation.
 
-## 💖 Support & Donations
-
-**IxeRam** is an open-source project developed with passion. If this tool has helped you in your research, debugging, or development, please consider supporting its further development! Every contribution helps me dedicate more time to adding features like the Call Graph and Structure Dissector.
-
-### 💎 Crypto Donations
-You can send your support directly via Ethereum:
-
-<p align="left">
-  <a href="https://etherscan.io/address/0xee985a9487407c527d873af7a226767e5bb48141">
-    <img src="https://img.shields.io/badge/Donate%20with-Ethereum-3C3C3D?style=for-the-badge&logo=ethereum&logoColor=white" alt="Donate with Ethereum">
-  </a>
-</p>
-
-**Ethereum (ERC-20):** `0xee985a9487407C527D873Af7A226767E5bB48141`
-
----
-
 ## 📜 License
-IxeRam is dual-licensed:
-1. **GNU AGPLv3** for open-source and non-commercial use.
-2. **InterXlicense v1.0** for commercial deployments.
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for more details.
 
 Made with 💜 by **myster_gif** @ **Internium Entertainment**.
 
