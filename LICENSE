@@ -1,58 +1,19 @@
-# Licensing Agreement: IxeRam
+Copyright (c) 2026 myster_gaif
 
-This software is dual-licensed by the copyright holder and managed by Internium-entertainment.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
----
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-## Option 1: Open Source (GNU AGPLv3)
-For enthusiasts, educators, and open-source developers. 
-Under this license, the software is free to use, provided that any derivative work or network-hosted version remains open-source under the same AGPLv3 terms.
-Full text: https://www.gnu.org/licenses/agpl-3.0.html
-
----
-
-## Option 2: InterXlicense v1.0 (Commercial & Proprietary)
-Copyright (c) 2026 myster_gaif. 
-Authorized Operator: Internium-entertainment.
-
---- English ---
-1. PURPOSE: This license is used by Internium-entertainment for the project "IxeRam".
-2. PERSONAL USE: Free for personal, educational, and non-commercial home use.
-3. COMMERCIAL USE: For any commercial use (sales, integration into paid products, monetization), you MUST:
-   a) Include "myster_gaif" as the author in all copies.
-   b) Notify and obtain explicit written consent/approval from the author at mystergaif@gmail.com BEFORE any commercial distribution.
-4. MODIFICATIONS: Any modifications must be reported to mystergaif@gmail.com and clearly documented.
-5. TERMINATION: Violation of these terms automatically terminates your rights.
-6. AUTHOR'S RIGHTS: In case of ambiguity, interpretation is always in favor of the author (myster_gaif).
-7. REVOCATION: The author reserves the right to unconditionally revoke this license from any individual or entity at any time.
-8. NO WARRANTY: Provided "AS IS".
-
---- Русский ---
-1. НАЗНАЧЕНИЕ: Данная лицензия используется организацией Internium-entertainment для проекта "IxeRam".
-2. ЛИЧНОЕ ИСПОЛЬЗОВАНИЕ: Бесплатно для личных, образовательных и домашних целей.
-3. КОММЕРЧЕСКОЕ ИСПОЛЬЗОВАНИЕ: Для любого коммерческого использования (продажа, интеграция в платные продукты, монетизация) вы ОБЯЗАНЫ:
-   a) Указать "myster_gaif" как автора во всех копиях продукта.
-   b) Уведомить автора и получить явное письменное согласование по адресу mystergaif@gmail.com ДО начала коммерческого использования.
-4. ИЗМЕНЕНИЯ: О любых модификациях необходимо сообщать на mystergaif@gmail.com с описанием правок.
-5. ПРЕКРАЩЕНИЕ ПРАВ: Нарушение условий автоматически аннулирует данную лицензию.
-6. ПРАВА АВТОРА: В спорных ситуациях трактовка всегда в пользу автора (myster_gaif).
-7. ОТЗЫВ ЛИЦЕНЗИИ: Автор оставляет за собой безоговорочное право в любой момент отозвать данную лицензию у любого лица или организации без объяснения причин.
-8. ОТКАЗ ОТ ГАРАНТИЙ: Продукт поставляется "КАК ЕСТЬ".
-
---- Español ---
-1. PROPÓSITO: Esta licencia es utilizada por Internium-entertainment para el proyecto "IxeRam".
-2. USO PERSONAL: Gratuito para uso personal, educativo y doméstico.
-3. USO COMERCIAL: Para ventas o integración en productos de pago, DEBE:
-   a) Incluir a "myster_gaif" como autor.
-   b) Notificar y obtener la aprobación explícita por escrito del autor en mystergaif@gmail.com ANTES del uso comercial.
-4. REVOCACIÓN: El autor se reserva el derecho incondicional de revocar esta licencia en cualquier momento.
-5. DERECHOS DEL AUTOR: En caso de ambigüedad, la interpretación favorece al autor.
-
---- Deutsch ---
-1. ZWECK: Diese Lizenz wird von Internium-entertainment für das Projekt "IxeRam" verwendet.
-2. NUTZUNG: Frei für persönliche und bildungsbezogene Zwecke.
-3. KOMMERZIELLE NUTZUNG: Für den Verkauf oder die Integration in kostenpflichtige Produkte MÜSSEN Sie:
-   a) "myster_gaif" als Autor angeben.
-   b) Die ausdrückliche schriftliche Zustimmung des Autors unter mystergaif@gmail.com VOR der Nutzung einholen.
-4. WIDERRUF: Der Autor behält sich das uneingeschränkte Recht vor, diese Lizenz jederzeit zu widerrufen.
-5. AUTORRECHTE: Bei Unklarheiten entscheidet die Auslegung zugunsten des Autors.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
