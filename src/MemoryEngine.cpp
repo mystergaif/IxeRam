@@ -327,47 +327,42 @@ bool MemoryEngine::wait_breakpoint(uintptr_t &hit_addr, int timeout_ms) {
     int wstatus = 0;
     pid_t wpid = waitpid(target_pid, &wstatus, WNOHANG);
     if (wpid == target_pid) {
-      if (WIFSTOPPED(wstatus) && WSTOPSIG(wstatus) == SIGTRAP) {
-        struct user_regs_struct regs;
-        if (ptrace(PTRACE_GETREGS, target_pid, nullptr, &regs) == 0) {
-          // Check DR6 for hardware breakpoint hits
-          long dr6 = ptrace(PTRACE_PEEKUSER, target_pid, DR_STATUS, nullptr);
-          bool hw_hit = false;
-          for (int i = 0; i < 4; ++i) {
-            if (dr6 & (1L << i)) {
-              hit_addr = hw_breakpoints[i].address;
-              hw_hit = true;
-              // Clear DR6 bit so it doesn't fire again immediately
-              dr6 &= ~(1L << i);
-              ptrace(PTRACE_POKEUSER, target_pid, DR_STATUS, (void *)dr6);
-              break;
-            }
-          }
+      if (WIFEXITED(wstatus)) {
+          std::cerr << "[Tracer] Target process exited.\n";
+          target_pid = -1;
+          return false;
+      }
+      if (WIFSTOPPED(wstatus)) {
+        int sig = WSTOPSIG(wstatus);
+        if (sig == SIGTRAP) {
+            struct user_regs_struct regs;
+            if (ptrace(PTRACE_GETREGS, target_pid, nullptr, &regs) == 0) {
+              hit_addr = (uintptr_t)(regs.rip - 1);
+              
+              // Only adjust RIP if it's one of OUR breakpoints
+              if (breakpoints.count(hit_addr)) {
+                  regs.rip = hit_addr;
+                  ptrace(PTRACE_SETREGS, target_pid, nullptr, &regs);
+              } else {
+                  hit_addr = regs.rip; // Might be a hardware BP or actual int3 in code
+              }
 
-          if (!hw_hit) {
-            // Probably software breakpoint (int3)
-            hit_addr = (uintptr_t)(regs.rip - 1);
-            if (breakpoints.count(hit_addr)) {
-               regs.rip = regs.rip - 1;
-               ptrace(PTRACE_SETREGS, target_pid, nullptr, &regs);
-               remove_breakpoint(hit_addr);
-            } else {
-               // Unknown trap
-               hit_addr = regs.rip;
+              AccessRecord ar;
+              ar.rip = regs.rip;
+              ar.rax = regs.rax;
+              ar.rbx = regs.rbx;
+              ar.rcx = regs.rcx;
+              ar.rdx = regs.rdx;
+              ar.is_write = false; 
+              access_records.push_back(ar);
+              
+              process_paused = true;
+              return true;
             }
-          }
-
-          AccessRecord ar;
-          ar.rip = regs.rip;
-          ar.rax = regs.rax;
-          ar.rbx = regs.rbx;
-          ar.rcx = regs.rcx;
-          ar.rdx = regs.rdx;
-          ar.is_write = false; 
-          access_records.push_back(ar);
-          
-          process_paused = true;
-          return true;
+        } else {
+            // Forward other signals to the target process
+            std::clog << "[Tracer] Received signal " << sig << ", forwarding...\n";
+            ptrace(PTRACE_CONT, target_pid, nullptr, (void*)(long)sig);
         }
       }
     }
@@ -376,24 +371,19 @@ bool MemoryEngine::wait_breakpoint(uintptr_t &hit_addr, int timeout_ms) {
     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - start)
             .count() >= timeout_ms)
       return false;
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 }
 
 void MemoryEngine::clear_breakpoints() {
   if (target_pid > 0) {
-    for (auto &[addr, orig] : breakpoints) {
+    for (auto const& [addr, orig] : breakpoints) {
       errno = 0;
       long current = ptrace(PTRACE_PEEKTEXT, target_pid, (void *)addr, nullptr);
       if (errno == 0) {
         long restored = (current & ~0xFFL) | orig;
         ptrace(PTRACE_POKETEXT, target_pid, (void *)addr, (void *)restored);
       }
-    }
-    // Clear all hardware breakpoints
-    for (int i = 0; i < 4; ++i) {
-      if (hw_breakpoints[i].active)
-        clear_hw_breakpoint(i);
     }
   }
   breakpoints.clear();
@@ -477,11 +467,25 @@ bool MemoryEngine::detach_ptrace() {
   return ptrace(PTRACE_DETACH, target_pid, nullptr, nullptr) == 0;
 }
 
-bool MemoryEngine::step_over() {
+bool MemoryEngine::step_over(uintptr_t breakpoint_addr) {
   if (target_pid <= 0) return false;
-  // Let the process execute exactly one instruction (which we just un-breakpointed)
-  if (ptrace(PTRACE_SINGLESTEP, target_pid, nullptr, nullptr) != 0) return false;
+  
+  bool was_bp = false;
+  if (breakpoint_addr > 0 && breakpoints.count(breakpoint_addr)) {
+      was_bp = true;
+      remove_breakpoint(breakpoint_addr);
+  }
+
+  if (ptrace(PTRACE_SINGLESTEP, target_pid, nullptr, nullptr) != 0) {
+      std::cerr << "[!] PTRACE_SINGLESTEP failed (errno " << errno << ")\n";
+      return false;
+  }
+  
   int status;
   waitpid(target_pid, &status, 0); 
+  
+  if (was_bp) {
+      set_breakpoint(breakpoint_addr);
+  }
   return true;
 }

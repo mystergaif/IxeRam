@@ -131,6 +131,33 @@ void MainWindow::setupUi() {
     ui_resultsTable->horizontalHeader()->setStretchLastSection(true);
     ui_resultsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     ui_resultsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    ui_resultsTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(ui_resultsTable, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        auto* item = ui_resultsTable->itemAt(pos);
+        if (!item) return;
+        
+        int row = item->row();
+        QString addrStr = ui_resultsTable->item(row, 0)->text();
+        uintptr_t addr = addrStr.toULongLong(nullptr, 16);
+
+        QMenu menu(this);
+        menu.addAction("👁 Add to Watchlist", [this, addr]() {
+            // Logic for adding to watchlist
+            onAddWatchClicked(); 
+        });
+        menu.addAction("🛠 Go to in Debugger", [this, addr]() {
+            currentDebugAddr = addr;
+            ui_tabWidget->setCurrentIndex(2);
+            refreshDisasmView();
+            refreshHexView();
+        });
+        menu.addAction("📐 Dissect Structure", [this, addr]() {
+            ui_dissectorBaseInput->setText(QString("0x%1").arg(addr, 0, 16).toUpper());
+            ui_tabWidget->setCurrentIndex(7);
+            onFillDissectorClicked();
+        });
+        menu.exec(ui_resultsTable->mapToGlobal(pos));
+    });
     ui_scannerLayout->addWidget(ui_resultsTable);
 
     ui_tabWidget->addTab(ui_scannerTab, "🔍 Scanner");
@@ -177,13 +204,30 @@ void MainWindow::setupUi() {
     ui_graphControlsLayout = new QHBoxLayout();
     ui_buildGraphButton = new QPushButton("🛠 Build Graph from Current Address", ui_graphTab);
     ui_traceGraphButton = new QPushButton("🎯 Start Live Trace", ui_graphTab);
+    ui_graphSearchInput = new QLineEdit(ui_graphTab);
+    ui_graphSearchInput->setPlaceholderText("Find address (0x...)");
+    ui_graphSearchButton = new QPushButton("🔍 Find", ui_graphTab);
+    
     ui_graphControlsLayout->addWidget(ui_buildGraphButton);
     ui_graphControlsLayout->addWidget(ui_traceGraphButton);
+    ui_graphControlsLayout->addSpacing(40);
+    ui_graphControlsLayout->addWidget(new QLabel("Search:"));
+    ui_graphControlsLayout->addWidget(ui_graphSearchInput);
+    ui_graphControlsLayout->addWidget(ui_graphSearchButton);
     ui_graphControlsLayout->addStretch();
     ui_graphLayout->addLayout(ui_graphControlsLayout);
 
+    connect(ui_graphSearchButton, &QPushButton::clicked, this, &MainWindow::onSearchGraphClicked);
+    connect(ui_graphSearchInput, &QLineEdit::returnPressed, this, &MainWindow::onSearchGraphClicked);
+
     ui_graphScene = new QGraphicsScene(ui_graphTab);
+    ui_graphScene->setItemIndexMethod(QGraphicsScene::BspTreeIndex);
+    ui_graphScene->setBspTreeDepth(10);
+    
     ui_graphView = new ZoomableView(ui_graphScene, ui_graphTab);
+    ui_graphView->setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
+    ui_graphView->setRenderHint(QPainter::SmoothPixmapTransform);
+    ui_graphView->setOptimizationFlags(QGraphicsView::DontSavePainterState | QGraphicsView::DontAdjustForAntialiasing);
     ui_graphView->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(ui_graphView, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
         auto* item = ui_graphView->itemAt(pos);
@@ -262,6 +306,32 @@ void MainWindow::setupUi() {
     ui_bpLayout->addWidget(ui_bpTable);
     ui_tabWidget->addTab(ui_bpTab, "🛑 Breakpoints");
 
+    // --- TAB 8: STRUCTURE DISSECTOR ---
+    ui_dissectorTab = new QWidget();
+    ui_dissectorLayout = new QVBoxLayout(ui_dissectorTab);
+    
+    auto* disCtrl = new QHBoxLayout();
+    ui_dissectorBaseInput = new QLineEdit(ui_dissectorTab);
+    ui_dissectorBaseInput->setPlaceholderText("Base Address (e.g. 0x123456)");
+    ui_dissectorAddButton = new QPushButton("➕ Add Field", ui_dissectorTab);
+    ui_dissectorFillButton = new QPushButton("🧩 Auto-Fill", ui_dissectorTab);
+    ui_dissectorClearButton = new QPushButton("🧹 Clear", ui_dissectorTab);
+    
+    disCtrl->addWidget(new QLabel("Base:", ui_dissectorTab));
+    disCtrl->addWidget(ui_dissectorBaseInput);
+    disCtrl->addWidget(ui_dissectorAddButton);
+    disCtrl->addWidget(ui_dissectorFillButton);
+    disCtrl->addWidget(ui_dissectorClearButton);
+    disCtrl->addStretch();
+    ui_dissectorLayout->addLayout(disCtrl);
+    
+    ui_dissectorTable = new QTableWidget(0, 5, ui_dissectorTab);
+    ui_dissectorTable->setHorizontalHeaderLabels({"Offset", "Type", "Value", "Hex", "Description"});
+    ui_dissectorTable->horizontalHeader()->setStretchLastSection(true);
+    ui_dissectorTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    ui_dissectorLayout->addWidget(ui_dissectorTable);
+    ui_tabWidget->addTab(ui_dissectorTab, "📐 Dissector");
+
     // Status Bar
     ui_statusBar = new QStatusBar(this);
     setStatusBar(ui_statusBar);
@@ -289,6 +359,19 @@ void MainWindow::setupUi() {
     connect(ui_runPtrScanButton, &QPushButton::clicked, this, &MainWindow::onRunPtrScanClicked);
     connect(ui_setBpButton, &QPushButton::clicked, this, &MainWindow::onSetBreakpointClicked);
     connect(ui_gotoButton, &QPushButton::clicked, this, &MainWindow::onGotoClicked);
+
+    connect(ui_dissectorAddButton, &QPushButton::clicked, this, &MainWindow::onAddDissectorFieldClicked);
+    connect(ui_dissectorClearButton, &QPushButton::clicked, this, &MainWindow::onClearDissectorClicked);
+    connect(ui_dissectorFillButton, &QPushButton::clicked, this, &MainWindow::onFillDissectorClicked);
+    
+    // Connect combo box changes in the table (delegates would be better but let's do it simple first)
+    connect(ui_dissectorTable, &QTableWidget::cellChanged, this, [this](int row, int col) {
+        if (col == 1) { // Type changed
+             // We'll handle this in refresh if we use combos as widgets, 
+             // but if it's text we might need to parse.
+             // For now let's use actual widgets.
+        }
+    });
 
     setWindowTitle("IxeRam");
     resize(1200, 850);
@@ -410,6 +493,7 @@ void MainWindow::updateUiData() {
     else if (tab == 4) refreshWatchlist();
     else if (tab == 5) refreshPtrScanTable();
     else if (tab == 6) refreshBpHitsTable();
+    else if (tab == 7) refreshDissectorView();
 }
 
 void MainWindow::refreshScannerTable() {
@@ -947,7 +1031,11 @@ void MainWindow::startLiveTrace() {
         // CRITICAL (Linux Ptrace Affinity): 
         // WE MUST ATTACH in this thread to be the official tracer.
         if (!engine.attach_ptrace()) {
-             std::cerr << "[!] Tracer failed to attach to PID " << engine.get_pid() << " (errno: " << errno << ")\n";
+             QString err = QString("Tracer failed: %1 (errno %2)").arg(strerror(errno)).arg(errno);
+             QMetaObject::invokeMethod(this, [this, err]() {
+                 ui_statusBar->showMessage(err, 5000);
+                 ui_traceGraphButton->setText("🎯 Start Live Trace");
+             });
              isTracing = false;
              return;
         }
@@ -975,16 +1063,47 @@ void MainWindow::startLiveTrace() {
                 
                 // Buffer the hit instead of immediate UI call
                 pendingHits[hit_addr].first++;
-                if (hasRecord) pendingHits[hit_addr].second = record;
+                if (hasRecord) {
+                    record.target_addr = 0;
+                    
+                    // --- DYNAMIC GRAPH EXPANSION LOGIC ---
+                    // Read the instruction at the hit address (need to restore original byte temporarily)
+                    uint8_t orig_byte = 0;
+                    if (engine.read_memory(hit_addr, &orig_byte, 1)) {
+                         // We have the address. Let's see if it's a branch instruction
+                         std::vector<uint8_t> insn_buf(15); // Max x86 insn size
+                         engine.read_memory(hit_addr, insn_buf.data(), 15);
+                         
+                         cs_insn *insn;
+                         size_t count = cs_disasm(capstoneHandle, insn_buf.data(), 15, hit_addr, 1, &insn);
+                         if (count > 0) {
+                             QString qMn = QString(insn[0].mnemonic);
+                             QString ops = QString(insn[0].op_str);
+                             
+                             // If it's a CALL or JMP with an absolute address
+                             if ((qMn == "call" || qMn.startsWith("j")) && ops.startsWith("0x")) {
+                                 bool ok;
+                                 uintptr_t target = ops.toULongLong(&ok, 16);
+                                 if (ok) record.target_addr = target;
+                             }
+                             cs_free(insn, count);
+                         }
+                    }
+                    pendingHits[hit_addr].second = record;
+                }
                 
-                // 1. STEP OVER the current instruction
-                engine.step_over(); 
+                // New logic: step_over handles removing/restoring BP internally
+                engine.step_over(hit_addr); 
                 
-                // 2. Put the INT 3 back
-                engine.set_breakpoint(hit_addr);
-                
-                // 3. Resume full-speed execution
+                // Resume full-speed execution
                 engine.resume_process();
+            } else if (engine.get_pid() == -1) {
+                // Target process gone
+                isTracing = false;
+                QMetaObject::invokeMethod(this, [this]() {
+                    ui_statusBar->showMessage("Tracer: Target process exited.", 5000);
+                    ui_traceGraphButton->setText("🎯 Start Live Trace");
+                });
             }
 
             // Periodically push buffered hits to UI (30 FPS)
@@ -1017,6 +1136,11 @@ void MainWindow::startLiveTrace() {
                                          }
                                      }
                                  }
+                                 
+                                 // --- DYNAMIC EXPANSION ---
+                                 if (data.second.target_addr > 0 && !graphNodes.count(data.second.target_addr)) {
+                                     addNodeToGraph(data.second.target_addr, addr);
+                                 }
                             }
                         }
                     });
@@ -1032,4 +1156,226 @@ void MainWindow::startLiveTrace() {
         engine.detach_ptrace(); // Hand over control back
         std::cout << "[Tracer] Clean exit. Game resumed.\n";
     });
+}
+
+void MainWindow::onAddDissectorFieldClicked() {
+    int nextOffset = 0;
+    if (!dissectorFields.empty()) {
+        const auto& last = dissectorFields.back();
+        int size = 4;
+        switch(last.type) {
+            case DissectorType::Int8: case DissectorType::UInt8: size = 1; break;
+            case DissectorType::Int16: case DissectorType::UInt16: size = 2; break;
+            case DissectorType::Int32: case DissectorType::UInt32: case DissectorType::Float: size = 4; break;
+            case DissectorType::Int64: case DissectorType::UInt64: case DissectorType::Double: case DissectorType::Pointer: size = 8; break;
+            case DissectorType::String: size = 16; break;
+        }
+        nextOffset = last.offset + size;
+    }
+    dissectorFields.push_back({nextOffset, DissectorType::Int32, "Field " + QString::number(dissectorFields.size())});
+    
+    int row = ui_dissectorTable->rowCount();
+    ui_dissectorTable->insertRow(row);
+    ui_dissectorTable->setItem(row, 0, new QTableWidgetItem(QString("+0x%1").arg(nextOffset, 0, 16).toUpper()));
+    
+    QComboBox* combo = new QComboBox();
+    combo->addItems({"Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Float", "Double", "Pointer", "String"});
+    combo->setCurrentIndex(4); // Int32
+    ui_dissectorTable->setCellWidget(row, 1, combo);
+    
+    ui_dissectorTable->setItem(row, 2, new QTableWidgetItem("0"));
+    ui_dissectorTable->setItem(row, 3, new QTableWidgetItem("00 00 00 00"));
+    ui_dissectorTable->setItem(row, 4, new QTableWidgetItem(dissectorFields.back().description));
+    
+    connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), [this, row](int index){
+        dissectorFields[row].type = static_cast<DissectorType>(index);
+    });
+}
+
+void MainWindow::onClearDissectorClicked() {
+    dissectorFields.clear();
+    ui_dissectorTable->setRowCount(0);
+}
+
+void MainWindow::onFillDissectorClicked() {
+    onClearDissectorClicked();
+    for (int i = 0; i < 16; ++i) {
+        onAddDissectorFieldClicked();
+    }
+}
+
+void MainWindow::refreshDissectorView() {
+    QString baseStr = ui_dissectorBaseInput->text();
+    if (baseStr.isEmpty()) return;
+    
+    uintptr_t base = 0;
+    bool ok;
+    if (baseStr.startsWith("0x")) base = baseStr.toULongLong(&ok, 16);
+    else base = baseStr.toULongLong(&ok, 10);
+    
+    if (!ok || base == 0) return;
+
+    for (int i = 0; i < ui_dissectorTable->rowCount(); ++i) {
+        if (i >= (int)dissectorFields.size()) break;
+        
+        auto& field = dissectorFields[i];
+        uintptr_t addr = base + field.offset;
+        
+        int size = 4;
+        switch(field.type) {
+            case DissectorType::Int8: case DissectorType::UInt8: size = 1; break;
+            case DissectorType::Int16: case DissectorType::UInt16: size = 2; break;
+            case DissectorType::Int32: case DissectorType::UInt32: case DissectorType::Float: size = 4; break;
+            case DissectorType::Int64: case DissectorType::UInt64: case DissectorType::Double: case DissectorType::Pointer: size = 8; break;
+            case DissectorType::String: size = 16; break;
+        }
+        
+        std::vector<uint8_t> buf(size);
+        if (engine.read_memory(addr, buf.data(), size)) {
+            QString valStr, hexStr;
+            for(int j=0; j<size; ++j) hexStr += QString("%1 ").arg(buf[j], 2, 16, QChar('0')).toUpper();
+            
+            switch(field.type) {
+                case DissectorType::Int8: valStr = QString::number(*(int8_t*)buf.data()); break;
+                case DissectorType::UInt8: valStr = QString::number(*(uint8_t*)buf.data()); break;
+                case DissectorType::Int16: valStr = QString::number(*(int16_t*)buf.data()); break;
+                case DissectorType::UInt16: valStr = QString::number(*(uint16_t*)buf.data()); break;
+                case DissectorType::Int32: valStr = QString::number(*(int32_t*)buf.data()); break;
+                case DissectorType::UInt32: valStr = QString::number(*(uint32_t*)buf.data()); break;
+                case DissectorType::Int64: valStr = QString::number(*(int64_t*)buf.data()); break;
+                case DissectorType::UInt64: valStr = QString::number(*(uint64_t*)buf.data()); break;
+                case DissectorType::Float: valStr = QString::number(*(float*)buf.data()); break;
+                case DissectorType::Double: valStr = QString::number(*(double*)buf.data()); break;
+                case DissectorType::Pointer: valStr = QString("0x%1").arg(*(uintptr_t*)buf.data(), 0, 16).toUpper(); break;
+                case DissectorType::String: {
+                    std::string s((char*)buf.data(), size);
+                    valStr = QString::fromStdString(s).simplified();
+                    break;
+                }
+            }
+            
+            ui_dissectorTable->setItem(i, 2, new QTableWidgetItem(valStr));
+            ui_dissectorTable->setItem(i, 3, new QTableWidgetItem(hexStr.trimmed()));
+        } else {
+            ui_dissectorTable->setItem(i, 2, new QTableWidgetItem("???"));
+            ui_dissectorTable->setItem(i, 3, new QTableWidgetItem("?? ?? ?? ??"));
+        }
+    }
+}
+
+void MainWindow::onSearchGraphClicked() {
+    QString text = ui_graphSearchInput->text().trimmed();
+    if (text.isEmpty()) return;
+    
+    uintptr_t target = 0;
+    bool ok;
+    if (text.startsWith("0x")) target = text.toULongLong(&ok, 16);
+    else target = text.toULongLong(&ok, 10);
+    
+    if (ok && graphNodes.count(target)) {
+        auto* rect = graphNodes[target].rect;
+        ui_graphView->centerOn(rect);
+        rect->setSelected(true);
+        
+        // Visual ping effect
+        auto* effect = new QGraphicsDropShadowEffect();
+        effect->setColor(QColor("#bb9af7"));
+        effect->setBlurRadius(20);
+        rect->setGraphicsEffect(effect);
+        QTimer::singleShot(2000, [rect]() { rect->setGraphicsEffect(nullptr); });
+    } else {
+        ui_statusBar->showMessage("Address not found in current graph.", 3000);
+    }
+}
+
+void MainWindow::addNodeToGraph(uintptr_t addr, uintptr_t parentAddr) {
+    if (graphNodes.count(addr)) return;
+    
+    // 1. Read and disassemble
+    std::vector<uint8_t> buf(128);
+    if (!engine.read_memory(addr, buf.data(), 128)) return;
+    
+    cs_insn *insn;
+    size_t count = cs_disasm(capstoneHandle, buf.data(), 128, addr, 8, &insn);
+    if (count == 0) return;
+    
+    GraphNode node;
+    node.addr = addr;
+    
+    QString html = "<div style='font-family:monospace; line-height:1.1; font-size:9pt;'>";
+    html += QString("<div style='background-color:#16161e; color:#7aa2f7; padding:4px; font-weight:bold;'>discovered_%1:</div>")
+            .arg(addr, 8, 16, QChar('0')).toUpper();
+    
+    for(size_t i = 0; i < count; ++i) {
+        QString addrStr = QString::number(insn[i].address, 16).toUpper().rightJustified(8, '0');
+        QString mnemonic = QString(insn[i].mnemonic).leftJustified(6);
+        QString ops = QString(insn[i].op_str);
+        QString mColor = "#c0caf5";
+        if (mnemonic.startsWith("j") || mnemonic == "call") mColor = "#f7768e";
+        html += QString("<div style='padding:2px;'><span style='color:#565f89;'>%1</span> <span style='color:%2; font-weight:bold;'>%3</span> <span style='color:#9ece6a;'>%4</span></div>")
+                .arg(addrStr, mColor, mnemonic, ops);
+        
+        if ((insn[i].mnemonic[0] == 'j' || std::string(insn[i].mnemonic) == "call") && ops.startsWith("0x")) {
+            bool ok;
+            uintptr_t target = ops.toULongLong(&ok, 16);
+            if (ok) node.callees.push_back(target);
+        }
+    }
+    html += "</div>";
+    cs_free(insn, count);
+    
+    auto* text = new QGraphicsTextItem();
+    text->setHtml(html);
+    QRectF br = text->boundingRect();
+    int nodeW = std::max(220, (int)br.width() + 10);
+    int nodeH = br.height() + 10;
+    
+    // Position: find parent and place below/right
+    int x = 0, y = 0;
+    if (parentAddr > 0 && graphNodes.count(parentAddr)) {
+        auto* pRect = graphNodes[parentAddr].rect;
+        x = pRect->x() + 300;
+        y = pRect->y() + 100;
+        // Basic collision avoidance
+        while(ui_graphScene->itemAt(x + 5, y + 5, QTransform())) { y += 150; }
+    }
+    
+    auto* rect = ui_graphScene->addRect(x, y, nodeW, nodeH, QPen(QColor("#9ece6a"), 2), QBrush(QColor("#24283b")));
+    rect->setFlag(QGraphicsItem::ItemIsMovable, true);
+    rect->setFlag(QGraphicsItem::ItemIsSelectable, true);
+    text->setParentItem(rect);
+    text->setPos(x + 5, y + 5);
+    node.rect = rect;
+    
+    graphNodes[addr] = node;
+    
+    // Draw Arrow from parent
+    if (parentAddr > 0 && graphNodes.count(parentAddr)) {
+        auto* pRect = graphNodes[parentAddr].rect;
+        QPainterPath path;
+        QPointF start = pRect->mapToScene(pRect->rect().center().x(), pRect->rect().bottom());
+        QPointF end = rect->mapToScene(rect->rect().center().x(), rect->rect().top());
+        path.moveTo(start);
+        path.cubicTo(start.x(), start.y() + 40, end.x(), end.y() - 40, end.x(), end.y());
+        
+        auto* wire = ui_graphScene->addPath(path, QPen(QColor("#1a1b26"), 6));
+        wire->setZValue(-2);
+        auto* flow = ui_graphScene->addPath(path, QPen(QColor("#9ece6a"), 2, Qt::CustomDashLine));
+        flow->setZValue(-1);
+        
+        GraphArrow gArr;
+        gArr.wireItem = wire;
+        gArr.flowItem = flow;
+        auto* aHead = ui_graphScene->addPolygon(QPolygonF(), QPen(QColor("#9ece6a")), QBrush(QColor("#9ece6a")));
+        gArr.arrowHead = aHead;
+        gArr.sourceNode = pRect;
+        gArr.targetNode = rect;
+        gArr.infoText = nullptr;
+        activeArrows.push_back(gArr);
+    }
+    
+    // CRITICAL: If tracing is active, put a breakpoint on the newly discovered node!
+    if (isTracing) {
+        engine.set_breakpoint(addr);
+    }
 }

@@ -24,6 +24,7 @@ struct MemoryRegion {
 struct AccessRecord {
   uint64_t rip;                // instruction address that caused access
   uint64_t rax, rbx, rcx, rdx; // register context
+  uint64_t target_addr;        // discovered branch target
   bool is_write;
 };
 
@@ -60,7 +61,7 @@ public:
   
   bool attach_ptrace();
   bool detach_ptrace();
-  bool step_over(); // New helper
+  bool step_over(uintptr_t breakpoint_addr = 0); // Improved helper
 
   // ─── Auto-attach by process name ──────────────────────────────────
   // Returns PID of first matching process, or -1 if not found
