@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QSlider>
+
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QLabel>
@@ -9,6 +11,7 @@
 #include <QStatusBar>
 #include <QComboBox>
 #include <QTimer>
+#include <unistd.h>
 #include <QTabWidget>
 #include <QSplitter>
 #include <QTextEdit>
@@ -72,7 +75,56 @@ protected:
     }
 };
 
+class SpeedClockWidget : public QWidget {
+    Q_OBJECT
+public:
+    SpeedClockWidget(QWidget* parent = nullptr) : QWidget(parent) {
+        setFixedSize(200, 200);
+        timer = new QTimer(this);
+        connect(timer, &QTimer::timeout, this, [this]() {
+            angle += speed * 5.0;
+            update();
+        });
+        timer->start(16); // ~60 FPS
+    }
+    void setSpeed(double s) { speed = s; }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.translate(width() / 2, height() / 2);
+
+        // Outer ring
+        painter.setPen(QPen(QColor("#414868"), 8));
+        painter.drawEllipse(-80, -80, 160, 160);
+
+        // Glow
+        QRadialGradient gradient(0, 0, 80);
+        gradient.setColorAt(0, QColor(122, 162, 247, 20));
+        gradient.setColorAt(1, QColor(122, 162, 247, 100));
+        painter.setBrush(gradient);
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(-80, -80, 160, 160);
+
+        // Clock hand
+        painter.rotate(angle);
+        painter.setPen(QPen(QColor("#7aa2f7"), 4, Qt::SolidLine, Qt::RoundCap));
+        painter.drawLine(0, 0, 0, -70);
+        
+        // Center dot
+        painter.setBrush(QColor("#bb9af7"));
+        painter.drawEllipse(-5, -5, 10, 10);
+    }
+
+private:
+    QTimer* timer;
+    double angle = 0;
+    double speed = 1.0;
+};
+
 class MainWindow : public QMainWindow {
+
     Q_OBJECT
 
 public:
@@ -97,6 +149,13 @@ private slots:
     void onAddDissectorFieldClicked();
     void onClearDissectorClicked();
     void onFillDissectorClicked();
+    
+    // Speedhack slots
+    void onSpeedSliderChanged(int value);
+    void onSpeedPauseClicked();
+    void onSpeedResetClicked();
+    void onSpeedInjectClicked();
+
 
 
 private:
@@ -191,6 +250,17 @@ private:
     QPushButton *ui_dissectorClearButton;
     QPushButton *ui_dissectorFillButton;
     QTableWidget *ui_dissectorTable;
+    
+    // TAB 9: Speedhack
+    QWidget *ui_speedhackTab;
+    QVBoxLayout *ui_speedhackLayout;
+    SpeedClockWidget *ui_speedClock;
+    QLabel *ui_speedValueLabel;
+    QSlider *ui_speedSlider;
+    QPushButton *ui_speedPauseButton;
+    QPushButton *ui_speedResetButton;
+    QPushButton *ui_speedInjectButton;
+
     
     // Shared Status
     QStatusBar *ui_statusBar;

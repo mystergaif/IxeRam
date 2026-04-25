@@ -489,3 +489,135 @@ bool MemoryEngine::step_over(uintptr_t breakpoint_addr) {
   }
   return true;
 }
+#include <dlfcn.h>
+#include <cstring>
+#include <sys/user.h>
+
+bool MemoryEngine::inject_library(const std::string &path) {
+  if (target_pid <= 0) return false;
+
+  std::cerr << "[Inject] Starting injection into PID " << target_pid << "...\n";
+
+  // 1. Find dlopen, mmap, and a syscall instruction in target
+  void *local_dlopen = dlsym(RTLD_DEFAULT, "dlopen");
+  if (!local_dlopen) local_dlopen = dlsym(RTLD_DEFAULT, "__libc_dlopen_mode");
+  void *local_mmap = dlsym(RTLD_DEFAULT, "mmap");
+
+  if (!local_dlopen || !local_mmap) {
+      std::cerr << "[Inject] ERROR: Could not find symbols locally (dlopen=" << local_dlopen << ", mmap=" << local_mmap << ")\n";
+      return false;
+  }
+
+  Dl_info info_dl, info_mmap;
+  dladdr(local_dlopen, &info_dl);
+  dladdr(local_mmap, &info_mmap);
+
+  update_maps();
+  uintptr_t target_libc_base = 0;
+  uintptr_t target_libdl_base = 0;
+  uintptr_t target_syscall_addr = 0;
+
+  for (const auto &reg : regions) {
+      if (target_libc_base == 0 && (reg.pathname.find("libc.so") != std::string::npos || reg.pathname.find("libc-") != std::string::npos)) target_libc_base = reg.start;
+      if (target_libdl_base == 0 && (reg.pathname.find("libdl.so") != std::string::npos || reg.pathname.find("libdl-") != std::string::npos)) target_libdl_base = reg.start;
+      
+      if (target_syscall_addr == 0 && reg.pathname.find("libc.so") != std::string::npos && reg.permissions.find('x') != std::string::npos) {
+          std::vector<uint8_t> code(std::min((uintptr_t)0x200000, reg.end - reg.start));
+          if (read_memory(reg.start, code.data(), code.size())) {
+              for (size_t i = 0; i < code.size() - 1; ++i) {
+                  if (code[i] == 0x0f && code[i+1] == 0x05) {
+                      target_syscall_addr = reg.start + i;
+                      break;
+                  }
+              }
+          }
+      }
+  }
+
+  uintptr_t dlopen_off = (uintptr_t)local_dlopen - (uintptr_t)info_dl.dli_fbase;
+  uintptr_t target_dlopen = (info_dl.dli_fbase == info_mmap.dli_fbase ? target_libc_base : target_libdl_base) + dlopen_off;
+  
+  std::cerr << "[Inject] Local dlopen base: " << info_dl.dli_fbase << " (fname: " << info_dl.dli_fname << ")\n";
+  std::cerr << "[Inject] Target bases: libc=0x" << std::hex << target_libc_base << ", libdl=0x" << target_libdl_base << std::dec << "\n";
+  std::cerr << "[Inject] Target dlopen: 0x" << std::hex << target_dlopen << ", syscall: 0x" << target_syscall_addr << std::dec << "\n";
+
+  if (!target_syscall_addr || !target_dlopen) {
+      std::cerr << "[Inject] ERROR: Failed to find syscall or dlopen in target!\n";
+      return false;
+  }
+
+  // 2. Attach
+  if (ptrace(PTRACE_ATTACH, target_pid, nullptr, nullptr) != 0) {
+      std::cerr << "[Inject] ERROR: ptrace(ATTACH) failed: " << strerror(errno) << "\n";
+      return false;
+  }
+  int status;
+  waitpid(target_pid, &status, 0);
+
+  struct user_regs_struct old_regs, regs;
+  ptrace(PTRACE_GETREGS, target_pid, nullptr, &old_regs);
+  memcpy(&regs, &old_regs, sizeof(regs));
+
+  // 3. Call mmap(0, 4096, PROT_READ|WRITE|EXEC, MAP_PRIVATE|ANON, -1, 0)
+  regs.rax = 9; // sys_mmap
+  regs.rdi = 0;
+  regs.rsi = 4096;
+  regs.rdx = 7; // PROT_READ | PROT_WRITE | PROT_EXEC
+  regs.r10 = 0x22; // MAP_PRIVATE | MAP_ANONYMOUS
+  regs.r8 = (unsigned long long)-1;
+  regs.r9 = 0;
+  regs.rip = target_syscall_addr;
+  
+  ptrace(PTRACE_SETREGS, target_pid, nullptr, &regs);
+  ptrace(PTRACE_SINGLESTEP, target_pid, nullptr, nullptr);
+  waitpid(target_pid, &status, 0);
+  ptrace(PTRACE_GETREGS, target_pid, nullptr, &regs);
+  
+  uintptr_t remote_mem = regs.rax;
+  std::cerr << "[Inject] Allocated remote memory: 0x" << std::hex << remote_mem << std::dec << "\n";
+  
+  if (remote_mem > 0xfffffffffffff000) { // Check for error (e.g. -EPERM)
+      std::cerr << "[Inject] ERROR: Remote mmap failed with code: " << (long)remote_mem << "\n";
+      ptrace(PTRACE_SETREGS, target_pid, nullptr, &old_regs);
+      ptrace(PTRACE_DETACH, target_pid, nullptr, nullptr);
+      return false;
+  }
+
+  // 4. Write path and call dlopen
+  std::string full_path = path + '\0';
+  for (size_t i = 0; i < full_path.size(); i += sizeof(long)) {
+      long val = 0;
+      memcpy(&val, full_path.data() + i, std::min(sizeof(long), full_path.size() - i));
+      ptrace(PTRACE_POKEDATA, target_pid, (void*)(remote_mem + i), (void*)val);
+  }
+
+  uintptr_t int3_addr = remote_mem + 2048;
+  ptrace(PTRACE_POKEDATA, target_pid, (void*)int3_addr, (void*)0xCC);
+
+  memcpy(&regs, &old_regs, sizeof(regs));
+  regs.rdi = remote_mem;
+  regs.rsi = 2; // RTLD_NOW
+  regs.rax = 0;
+  regs.rsp -= 256; // Bigger padding for stack
+  regs.rsp &= ~0xFL;
+  regs.rsp -= 8;
+  ptrace(PTRACE_POKEDATA, target_pid, (void*)regs.rsp, (void*)int3_addr);
+  
+  regs.rip = target_dlopen;
+  ptrace(PTRACE_SETREGS, target_pid, nullptr, &regs);
+  std::cerr << "[Inject] Jumping to dlopen at 0x" << std::hex << regs.rip << " with RDI=0x" << regs.rdi << std::dec << "...\n";
+  
+  ptrace(PTRACE_CONT, target_pid, nullptr, nullptr);
+  waitpid(target_pid, &status, 0);
+
+  if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP) {
+      std::cerr << "[Inject] SUCCESS! Library loaded.\n";
+  } else {
+      std::cerr << "[Inject] ERROR: Process stopped with status 0x" << std::hex << status << " (Signal: " << std::dec << WSTOPSIG(status) << ")\n";
+  }
+
+  // 5. Restore
+  ptrace(PTRACE_SETREGS, target_pid, nullptr, &old_regs);
+  ptrace(PTRACE_DETACH, target_pid, nullptr, nullptr);
+  return true;
+}

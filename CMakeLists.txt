@@ -73,7 +73,7 @@ target_link_libraries(ixeram
     PRIVATE ftxui::screen ftxui::dom ftxui::component
     PRIVATE Qt6::Widgets
     PRIVATE capstone keystone
-    PRIVATE pthread
+    PRIVATE pthread dl
 )
 
 target_include_directories(ixeram PRIVATE include)

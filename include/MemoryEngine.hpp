@@ -91,6 +91,10 @@ public:
   // Get active hardware breakpoints
   std::vector<HWBreakpoint> get_hw_breakpoints() const;
 
+  // ─── Code Injection ────────────────────────────────────────────────
+  // Inject a shared library into the target process via ptrace + dlopen
+  bool inject_library(const std::string &path);
+
 private:
   pid_t target_pid;
   bool process_paused = false;

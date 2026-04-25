@@ -15,6 +15,11 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <iostream>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 
 void applyDarkTheme() {
     qApp->setStyle(QStyleFactory::create("Fusion"));
@@ -331,6 +336,52 @@ void MainWindow::setupUi() {
     ui_dissectorTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     ui_dissectorLayout->addWidget(ui_dissectorTable);
     ui_tabWidget->addTab(ui_dissectorTab, "📐 Dissector");
+    
+    // --- TAB 9: SPEEDHACK ---
+    ui_speedhackTab = new QWidget();
+    ui_speedhackLayout = new QVBoxLayout(ui_speedhackTab);
+    ui_speedhackLayout->setAlignment(Qt::AlignCenter);
+
+    ui_speedClock = new SpeedClockWidget(ui_speedhackTab);
+    ui_speedhackLayout->addWidget(ui_speedClock, 0, Qt::AlignCenter);
+
+    ui_speedValueLabel = new QLabel("Current Speed: 1.00x", ui_speedhackTab);
+    ui_speedValueLabel->setStyleSheet("font-size: 18pt; font-weight: bold; color: #7aa2f7; margin-top: 20px;");
+    ui_speedhackLayout->addWidget(ui_speedValueLabel, 0, Qt::AlignCenter);
+
+    ui_speedSlider = new QSlider(Qt::Horizontal, ui_speedhackTab);
+    ui_speedSlider->setRange(0, 1000); // 0.0 to 10.0
+    ui_speedSlider->setValue(100);    // 1.0
+    ui_speedSlider->setFixedWidth(400);
+    ui_speedSlider->setStyleSheet(
+        "QSlider::groove:horizontal { border: 1px solid #414868; height: 10px; background: #1a1b26; margin: 2px 0; border-radius: 5px; }"
+        "QSlider::handle:horizontal { background: #7aa2f7; border: 1px solid #7aa2f7; width: 20px; height: 20px; margin: -6px 0; border-radius: 10px; }"
+    );
+    ui_speedhackLayout->addWidget(ui_speedSlider, 0, Qt::AlignCenter);
+
+    auto* speedBtns = new QHBoxLayout();
+    ui_speedPauseButton = new QPushButton("⏸ Pause (0x)", ui_speedhackTab);
+    ui_speedResetButton = new QPushButton("🔄 Reset (1x)", ui_speedhackTab);
+    ui_speedInjectButton = new QPushButton("💉 Inject Speedhack", ui_speedhackTab);
+    ui_speedPauseButton->setFixedWidth(120);
+    ui_speedResetButton->setFixedWidth(120);
+    ui_speedInjectButton->setFixedWidth(150);
+    ui_speedInjectButton->setStyleSheet("background-color: #f7768e; color: #1a1b26; font-weight: bold;");
+    
+    speedBtns->addStretch();
+    speedBtns->addWidget(ui_speedPauseButton);
+    speedBtns->addWidget(ui_speedResetButton);
+    speedBtns->addWidget(ui_speedInjectButton);
+    speedBtns->addStretch();
+    ui_speedhackLayout->addLayout(speedBtns);
+
+    ui_speedhackLayout->addSpacing(40);
+    auto* speedInfo = new QLabel("Run target app with: LD_PRELOAD=./build/libspeedhack.so ./app", ui_speedhackTab);
+    speedInfo->setStyleSheet("color: #565f89; font-style: italic;");
+    ui_speedhackLayout->addWidget(speedInfo, 0, Qt::AlignCenter);
+
+    ui_tabWidget->addTab(ui_speedhackTab, "⚡ Speedhack");
+
 
     // Status Bar
     ui_statusBar = new QStatusBar(this);
@@ -363,6 +414,13 @@ void MainWindow::setupUi() {
     connect(ui_dissectorAddButton, &QPushButton::clicked, this, &MainWindow::onAddDissectorFieldClicked);
     connect(ui_dissectorClearButton, &QPushButton::clicked, this, &MainWindow::onClearDissectorClicked);
     connect(ui_dissectorFillButton, &QPushButton::clicked, this, &MainWindow::onFillDissectorClicked);
+    
+    // Speedhack Connections
+    connect(ui_speedSlider, &QSlider::valueChanged, this, &MainWindow::onSpeedSliderChanged);
+    connect(ui_speedPauseButton, &QPushButton::clicked, this, &MainWindow::onSpeedPauseClicked);
+    connect(ui_speedResetButton, &QPushButton::clicked, this, &MainWindow::onSpeedResetClicked);
+    connect(ui_speedInjectButton, &QPushButton::clicked, this, &MainWindow::onSpeedInjectClicked);
+
     
     // Connect combo box changes in the table (delegates would be better but let's do it simple first)
     connect(ui_dissectorTable, &QTableWidget::cellChanged, this, [this](int row, int col) {
@@ -1377,5 +1435,51 @@ void MainWindow::addNodeToGraph(uintptr_t addr, uintptr_t parentAddr) {
     // CRITICAL: If tracing is active, put a breakpoint on the newly discovered node!
     if (isTracing) {
         engine.set_breakpoint(addr);
+    }
+}
+
+void MainWindow::onSpeedSliderChanged(int value) {
+    double spd = (double)value / 100.0;
+    ui_speedValueLabel->setText(QString("Current Speed: %1x").arg(spd, 0, 'f', 2));
+    ui_speedClock->setSpeed(spd);
+
+    if (engine.get_pid() == -1) return;
+
+    std::string shm_name = "/speedhack_" + std::to_string(engine.get_pid());
+    int shm_fd = shm_open(shm_name.c_str(), O_CREAT | O_RDWR, 0666);
+    if (shm_fd != -1) {
+        ftruncate(shm_fd, sizeof(double));
+        void* ptr = mmap(NULL, sizeof(double), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+        if (ptr != MAP_FAILED) {
+            memcpy(ptr, &spd, sizeof(double));
+            munmap(ptr, sizeof(double));
+        }
+        ::close(shm_fd);
+        std::string shm_full_path = "/dev/shm/speedhack_" + std::to_string(engine.get_pid());
+        chmod(shm_full_path.c_str(), 0666);
+    }
+}
+
+void MainWindow::onSpeedPauseClicked() {
+    ui_speedSlider->setValue(0);
+}
+
+void MainWindow::onSpeedResetClicked() {
+    ui_speedSlider->setValue(100);
+}
+
+void MainWindow::onSpeedInjectClicked() {
+    if (engine.get_pid() == -1) {
+        QMessageBox::warning(this, "Error", "Attach to a process first!");
+        return;
+    }
+
+    QString libPath = QCoreApplication::applicationDirPath() + "/libspeedhack.so";
+    if (engine.inject_library(libPath.toStdString())) {
+        QMessageBox::information(this, "Success", "Speedhack injected successfully!\nNow you can change the speed.");
+        // Force update SHM with current slider value
+        onSpeedSliderChanged(ui_speedSlider->value());
+    } else {
+        QMessageBox::critical(this, "Error", "Failed to inject library. Make sure you are running as root and the process is not protected (e.g. by Yama ptrace_scope).");
     }
 }
